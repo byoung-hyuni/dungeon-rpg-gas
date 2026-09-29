@@ -48,11 +48,13 @@ function setup() {
 
 /** 데이터 시트(Config~Items)를 SEED 값으로 덮어쓴다. Players/Rankings는 유지. */
 function resetGameData() {
-  let ok = true;
+  // 시트 메뉴에서 확인을 받은 경우에만 실행한다.
+  // (웹 앱에서 google.script.run 으로 호출되면 getUi()가 실패하므로 아무것도 하지 않는다)
+  let ok = false;
   try {
     const ui = SpreadsheetApp.getUi();
     ok = ui.alert('게임 데이터 초기화', 'Config·Levels·Classes·Skills·Dungeons·Monsters·Items 시트를 초기값으로 덮어씁니다.\n(Players, Rankings는 유지됩니다) 계속할까요?', ui.ButtonSet.YES_NO) === ui.Button.YES;
-  } catch (e) { /* 편집기에서 실행하면 확인 없이 진행 */ }
+  } catch (e) { ok = false; }
   if (!ok) return;
   const ss = SpreadsheetApp.getActiveSpreadsheet() || getSS_();
   Object.keys(SEED).forEach(function (name) { ensureSheet_(ss, name, SEED[name], true); });
@@ -73,7 +75,7 @@ function menuResetPin() {
   if (r1.getSelectedButton() !== ui.Button.OK) return;
   const r2 = ui.prompt('PIN 초기화', '새 PIN 4자리를 입력하세요.', ui.ButtonSet.OK_CANCEL);
   if (r2.getSelectedButton() !== ui.Button.OK) return;
-  const res = adminResetPin(r1.getResponseText(), r2.getResponseText());
+  const res = adminResetPin_(r1.getResponseText(), r2.getResponseText());
   ui.alert(res);
 }
 

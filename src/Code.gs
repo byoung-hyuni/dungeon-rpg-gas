@@ -248,7 +248,11 @@ function indexOfName_(list, lowerName) {
 
 /* ================= 관리자 ================= */
 
-function adminResetPin(name, newPin) {
+/**
+ * PIN 초기화. 이름이 _ 로 끝나는 비공개 함수라 웹 앱(google.script.run)에서는 호출할 수 없고,
+ * 시트 메뉴의 menuResetPin 에서만 부른다.
+ */
+function adminResetPin_(name, newPin) {
   name = cleanName_(name);
   checkPin_(newPin);
   const lock = LockService.getScriptLock();

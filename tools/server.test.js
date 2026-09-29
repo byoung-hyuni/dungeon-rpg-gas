@@ -50,10 +50,15 @@ r = g("submitRecord('검객','5555',{dungeonId:'d2',clearSec:130,hits:5,maxCombo
 const rk = JSON.parse(g('getRankings()'));
 assert.strictEqual(rk.byDungeon.d1.length, 2); assert.strictEqual(rk.overall[0].name, '검객'); assert.strictEqual(rk.overall[0].clears, 2);
 console.log('overall', rk.overall);
-assert(/초기화/.test(g("adminResetPin('검객','7777')")));
+assert(/초기화/.test(g("adminResetPin_('검객','7777')")));
 assert.strictEqual(g("login('검객','7777')").status, 'ok');
 
 // 등급표 확인
 const d1 = data.dungeons[0];
 [[60, 0, 30], [100, 10, 20], [200, 40, 5]].forEach(([t, h, c]) => console.log('d1', t, 's', h, 'hits', c, 'combo →', g(`calcClearResult(${JSON.stringify(d1)},${t},${h},${c},${JSON.stringify(data.config)})`)));
+// 웹 앱에서 호출되면 안 되는 관리자 동작
+assert.strictEqual(typeof ctx.adminResetPin, 'undefined', 'adminResetPin must be private');
+ctx.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Items').getRange(2, 2).setValue('변조');
+g('resetGameData()');   // UI 없음 → 아무것도 하지 않아야 함
+assert.strictEqual(ctx.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Items').getRange(2, 2).getValue(), '변조');
 console.log('ALL SERVER TESTS PASSED');
