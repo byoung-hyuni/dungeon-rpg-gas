@@ -6,7 +6,8 @@ const { execFileSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 const rules = [
-  ['Google 배포 ID', /AKfy[A-Za-z0-9_-]{30,}/g],
+  ['Google 배포 ID', /AKfy[A-Za-z0-9_.-]{10,}/g],
+  ['개인 대화 링크', /https:\/\/(?:claude\.ai\/code\/session_|chatgpt\.com\/c\/)[A-Za-z0-9_-]+/g],
   ['GitHub 인증 토큰', /(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,})/g],
   ['Google OAuth 토큰', /ya29\.[A-Za-z0-9_-]{20,}/g],
   ['Google API 키', /AIza[A-Za-z0-9_-]{30,}/g],
