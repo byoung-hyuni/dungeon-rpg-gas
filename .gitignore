@@ -1,0 +1,12 @@
+# 빌드 결과물 (npm run build 로 다시 생성)
+dist/
+tools/shots/
+
+node_modules/
+.DS_Store
+
+# clasp 로그인 정보 — 절대 커밋 금지 (보통 홈 폴더에 있지만 만일을 대비)
+.clasprc.json
+
+# 첫 배포 시도 때 남은 폴더 (삭제 예정)
+_to_delete/

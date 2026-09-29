@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('Style'); ?>
+</head>
+<body>
+  <div id="app" tabindex="0">
+    <canvas id="game" width="960" height="540"></canvas>
+    <div id="ui"></div>
+    <div id="modal" class="hidden"></div>
+    <div id="toast"></div>
+    <div id="focusHint" class="hidden">화면을 한 번 클릭하면 키보드로 조작할 수 있어요</div>
+  </div>
+  <?!= include('Api'); ?>
+  <?!= include('Render'); ?>
+  <?!= include('Game'); ?>
+</body>
+</html>

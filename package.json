@@ -1,0 +1,15 @@
+{
+  "name": "dungeon-rpg-gas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Apps Script로 만든 던전앤파이터 스타일 횡스크롤 액션 RPG",
+  "scripts": {
+    "test": "node tools/server.test.js",
+    "test:e2e": "node tools/build.js && node tools/e2e.test.js",
+    "build": "node tools/build.js",
+    "push": "clasp push -f",
+    "deploy": "clasp create-deployment -i YOUR_DEPLOYMENT_ID -d",
+    "deployments": "clasp list-deployments",
+    "open": "clasp open-script"
+  }
+}

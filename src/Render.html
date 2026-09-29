@@ -1,0 +1,292 @@
+<script>
+/**
+ * Render — 화면 그리기 담당
+ * ------------------------------------------------------------
+ * 게임 로직(Game.html)은 "무엇을 어디에" 그릴지만 알려주고,
+ * "어떻게" 그릴지는 이 파일이 정한다.
+ *
+ * ▶ 나중에 이모지를 도트 이미지로 바꾸려면 SpriteSource.get() 만 바꾸면 된다.
+ *   예) SPRITE_IMAGES = { m_slime: 'https://.../slime.png' } 를 두고
+ *       key 에 해당하는 이미지가 있으면 Image 를, 없으면 이모지 캔버스를 돌려주기.
+ */
+const SpriteSource = {
+  FONT: '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Segoe UI Symbol",sans-serif',
+  cache: {},
+  /**
+   * @param {string} emoji  표시할 이모지 (시트의 emoji 컬럼)
+   * @param {number} size   글자 크기(px)
+   * @param {string} variant ''(기본) | 'white'(피격 번쩍임용 실루엣)
+   * @return {HTMLCanvasElement} 가로 가운데·세로 가운데 정렬된 스프라이트
+   */
+  get: function (emoji, size, variant) {
+    size = Math.round(size);
+    const key = emoji + '|' + size + '|' + (variant || '');
+    if (this.cache[key]) return this.cache[key];
+    const pad = Math.ceil(size * 0.35);
+    const c = document.createElement('canvas');
+    c.width = c.height = size + pad * 2;
+    const g = c.getContext('2d');
+    g.font = size + 'px ' + this.FONT;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(emoji, c.width / 2, c.height / 2 + size * 0.05);
+    if (variant === 'white') {
+      g.globalCompositeOperation = 'source-in';
+      g.fillStyle = '#ffffff';
+      g.fillRect(0, 0, c.width, c.height);
+    }
+    this.cache[key] = c;
+    return c;
+  },
+};
+
+const Renderer = {
+  W: 960, H: 540, FLOOR_TOP: 290,
+
+  /** 던전 배경: 하늘 → 먼 배경(이모지, 시차 스크롤) → 바닥 타일 */
+  drawBackground: function (ctx, theme, camX, roomW, t) {
+    const W = this.W, H = this.H, FT = this.FLOOR_TOP;
+    const sky = ctx.createLinearGradient(0, 0, 0, FT);
+    sky.addColorStop(0, shade(theme.bgTop, -0.35));
+    sky.addColorStop(1, theme.bgTop);
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, FT);
+
+    // 먼 배경 (시차 0.35)
+    const spr = SpriteSource.get(theme.emoji, 70);
+    ctx.globalAlpha = 0.45;
+    const step = 170, off = -(camX * 0.35) % step;
+    for (let x = off - step; x < W + step; x += step) {
+      const k = Math.abs(Math.round((x + camX * 0.35) / step)) % 3;
+      const s = [1, 0.75, 0.9][k];
+      ctx.drawImage(spr, x, FT - spr.height * s + 14, spr.width * s, spr.height * s);
+    }
+    ctx.globalAlpha = 1;
+
+    // 바닥
+    const fl = ctx.createLinearGradient(0, FT, 0, H);
+    fl.addColorStop(0, shade(theme.bgBottom, -0.25));
+    fl.addColorStop(1, shade(theme.bgBottom, -0.55));
+    ctx.fillStyle = fl; ctx.fillRect(0, FT, W, H - FT);
+    ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.lineWidth = 2;
+    const tile = 120;
+    for (let x = -((camX) % tile) - tile; x < W + tile; x += tile) {
+      ctx.beginPath(); ctx.moveTo(x, FT); ctx.lineTo(x - 60, H); ctx.stroke();
+    }
+    [340, 410, 480].forEach(function (y) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); });
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0, FT - 4, W, 6);
+    // 방 양 끝 벽
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    if (camX < 10) ctx.fillRect(0 - camX, FT - 40, 16, H);
+    if (camX + W > roomW - 10) ctx.fillRect(roomW - camX - 16, FT - 40, 16, H);
+  },
+
+  /** 마을 배경 (메뉴 화면 뒤) */
+  drawTown: function (ctx, t, heroEmoji) {
+    const W = this.W, H = this.H;
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#1b1440'); g.addColorStop(0.55, '#4b2e6b'); g.addColorStop(0.56, '#3a2b2b'); g.addColorStop(1, '#1d1515');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // 별
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    for (let i = 0; i < 40; i++) {
+      const x = (i * 137.5) % W, y = (i * 61.3) % 250;
+      const a = 0.4 + 0.6 * Math.abs(Math.sin(t * 1.3 + i));
+      ctx.globalAlpha = a; ctx.fillRect(x, y, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+    const houses = ['🏠', '🏪', '⛪', '🏡', '🏰', '🏠'];
+    houses.forEach(function (e, i) {
+      const s = SpriteSource.get(e, 72);
+      ctx.drawImage(s, 40 + i * 160, 300 - s.height + 10);
+    });
+    const fire = SpriteSource.get('🔥', 34 + Math.sin(t * 8) * 2);
+    ctx.drawImage(fire, 470 - fire.width / 2, 420 - fire.height / 2);
+    if (heroEmoji) {
+      const h = SpriteSource.get(heroEmoji, 60);
+      const bob = Math.sin(t * 3) * 3;
+      this.drawShadow(ctx, 400, 450, 60);
+      ctx.drawImage(h, 400 - h.width / 2, 450 - h.height + 14 + bob);
+    }
+  },
+
+  drawShadow: function (ctx, sx, sy, size) {
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(sx, sy, size * 0.42, size * 0.13, 0, 0, Math.PI * 2); ctx.fill();
+  },
+
+  /**
+   * 캐릭터/몬스터 그리기
+   * a: { x, y, z, size, emoji, facing(1=오른쪽,-1=왼쪽), emojiFacing('L'|'R'), flash, alpha, windup, rot, invul }
+   */
+  drawActor: function (ctx, a, camX, t) {
+    const sx = a.x - camX, sy = a.y;
+    this.drawShadow(ctx, sx, sy, a.size * Math.max(0.5, 1 - a.z / 400));
+    const natural = a.emojiFacing === 'R' ? 1 : -1;
+    const flip = a.facing !== natural;
+    const spr = SpriteSource.get(a.emoji, a.size, a.flash > 0 ? 'white' : '');
+    const shake = a.hurt > 0 ? (Math.random() - 0.5) * 6 : 0;
+    ctx.save();
+    ctx.globalAlpha = a.alpha == null ? 1 : a.alpha;
+    if (a.invul > 0 && Math.floor(t * 20) % 2 === 0) ctx.globalAlpha *= 0.45;
+    ctx.translate(sx + shake, sy - a.z - a.size * 0.5);
+    if (a.rot) ctx.rotate(a.rot);
+    if (flip) ctx.scale(-1, 1);
+    ctx.drawImage(spr, -spr.width / 2, -spr.height / 2);
+    ctx.restore();
+    if (a.windup > 0) { // 공격 예고
+      ctx.fillStyle = '#ff3b3b'; ctx.font = 'bold ' + Math.round(a.size * 0.5) + 'px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('!', sx, sy - a.z - a.size - 6);
+    }
+    if (a.nameTag) {
+      ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(a.nameTag, sx + 1, sy + 17);
+      ctx.fillStyle = '#ffe9a8'; ctx.fillText(a.nameTag, sx, sy + 16);
+    }
+  },
+
+  /** 플레이어 무기(검) — 공격 단계에 따라 휘두르는 각도가 바뀐다 */
+  drawWeapon: function (ctx, p, camX) {
+    const sx = p.x - camX, sy = p.y - p.z - p.size * 0.45;
+    const spr = SpriteSource.get('🗡️', p.size * 0.7);
+    let ang = -0.6;
+    if (p.swing != null) ang = -2.0 + p.swing * 3.0;   // 0→1 로 진행하며 위에서 아래로
+    ctx.save();
+    ctx.translate(sx + p.facing * p.size * 0.35, sy);
+    ctx.scale(p.facing, 1);
+    ctx.rotate(ang + Math.PI / 4);
+    ctx.drawImage(spr, -spr.width * 0.2, -spr.height * 0.8);
+    ctx.restore();
+  },
+
+  drawProjectile: function (ctx, pr, camX, t) {
+    const spr = SpriteSource.get(pr.emoji, pr.size);
+    this.drawShadow(ctx, pr.x - camX, pr.y, pr.size * 0.7);
+    ctx.save();
+    ctx.translate(pr.x - camX, pr.y - pr.z);
+    if (pr.spin) ctx.rotate(t * 12);
+    if (pr.vx > 0 && !pr.spin) ctx.scale(-1, 1);
+    ctx.drawImage(spr, -spr.width / 2, -spr.height / 2);
+    ctx.restore();
+  },
+
+  drawDrop: function (ctx, d, camX, t) {
+    const spr = SpriteSource.get(d.emoji, 30);
+    const sx = d.x - camX, bob = d.z > 0 ? 0 : Math.sin(t * 4 + d.x) * 3;
+    this.drawShadow(ctx, sx, d.y, 30);
+    if (d.color) { // 등급 빛기둥
+      ctx.fillStyle = d.color; ctx.globalAlpha = 0.25 + 0.15 * Math.sin(t * 5);
+      ctx.fillRect(sx - 3, d.y - 90, 6, 90); ctx.globalAlpha = 1;
+    }
+    ctx.drawImage(spr, sx - spr.width / 2, d.y - d.z - 22 - spr.height / 2 + bob);
+  },
+
+  /** 방 오른쪽 끝의 문 (몬스터를 모두 잡으면 열림) */
+  drawDoor: function (ctx, x, open, isBossNext, camX, t) {
+    const sx = x - camX;
+    if (sx < -80 || sx > this.W + 80) return;
+    const spr = SpriteSource.get(open ? '🚪' : '🔒', 64);
+    if (open) {
+      ctx.fillStyle = isBossNext ? 'rgba(255,60,60,0.35)' : 'rgba(255,220,120,0.35)';
+      ctx.beginPath(); ctx.ellipse(sx, 405, 60 + Math.sin(t * 6) * 6, 22, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.drawImage(spr, sx - spr.width / 2, 330 - spr.height / 2);
+    if (open) {
+      ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = isBossNext ? '#ff6b6b' : '#ffe08a';
+      ctx.fillText(isBossNext ? 'BOSS ▶' : 'GO ▶', sx, 270 + Math.sin(t * 6) * 4);
+    }
+  },
+
+  drawEffects: function (ctx, list, camX) {
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i], k = e.t / e.life, sx = e.x - camX;
+      ctx.save();
+      if (e.type === 'text') {
+        ctx.globalAlpha = Math.min(1, 2 - k * 2);
+        ctx.font = 'bold ' + (e.size || 22) + 'px sans-serif'; ctx.textAlign = 'center';
+        const y = e.y - e.z - 60 - k * 40;
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.8)'; ctx.strokeText(e.text, sx, y);
+        ctx.fillStyle = e.color || '#fff'; ctx.fillText(e.text, sx, y);
+      } else if (e.type === 'slash') {
+        ctx.globalAlpha = 1 - k;
+        ctx.strokeStyle = e.color || '#ffffff'; ctx.lineWidth = 8 * (1 - k) + 2;
+        ctx.beginPath();
+        const cy = e.y - e.z - 34, r = e.r;
+        if (e.facing > 0) ctx.arc(sx, cy, r, -1.3, 1.0); else ctx.arc(sx, cy, r, Math.PI - 1.0, Math.PI + 1.3);
+        ctx.stroke();
+      } else if (e.type === 'ring') {
+        ctx.globalAlpha = 1 - k;
+        ctx.strokeStyle = e.color || '#fff'; ctx.lineWidth = 5;
+        const r = e.r0 + (e.r1 - e.r0) * k;
+        ctx.beginPath(); ctx.ellipse(sx, e.y, r, r * 0.35, 0, 0, Math.PI * 2); ctx.stroke();
+      } else if (e.type === 'tele') { // 보스 장판 예고
+        ctx.fillStyle = 'rgba(255,40,40,' + (0.15 + 0.25 * k) + ')';
+        ctx.strokeStyle = 'rgba(255,80,80,0.9)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(sx, e.y, e.r, e.r * 0.35, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,40,40,0.35)';
+        ctx.beginPath(); ctx.ellipse(sx, e.y, e.r * k, e.r * 0.35 * k, 0, 0, Math.PI * 2); ctx.fill();
+      } else if (e.type === 'spark') {
+        ctx.globalAlpha = 1 - k;
+        const spr = SpriteSource.get(e.emoji || '💥', 34);
+        const s = 0.6 + k * 0.8;
+        ctx.drawImage(spr, sx - spr.width * s / 2, e.y - e.z - 40 - spr.height * s / 2, spr.width * s, spr.height * s);
+      } else if (e.type === 'banner') { // 화면 중앙 큰 글씨
+        ctx.globalAlpha = k < 0.15 ? k / 0.15 : Math.min(1, (1 - k) * 3);
+        ctx.font = '900 ' + (e.size || 64) + 'px sans-serif'; ctx.textAlign = 'center';
+        ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(e.text, this.W / 2, e.y || 220);
+        ctx.fillStyle = e.color || '#ffcc4d'; ctx.fillText(e.text, this.W / 2, e.y || 220);
+        if (e.sub) { ctx.font = 'bold 22px sans-serif'; ctx.lineWidth = 5; ctx.strokeText(e.sub, this.W / 2, (e.y || 220) + 40); ctx.fillStyle = '#fff'; ctx.fillText(e.sub, this.W / 2, (e.y || 220) + 40); }
+      }
+      ctx.restore();
+    }
+  },
+
+  /* ---------- HUD 도우미 ---------- */
+  bar: function (ctx, x, y, w, h, ratio, color, label) {
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; roundRect(ctx, x - 2, y - 2, w + 4, h + 4, 5); ctx.fill();
+    ctx.fillStyle = '#2a2238'; roundRect(ctx, x, y, w, h, 4); ctx.fill();
+    ctx.fillStyle = color; roundRect(ctx, x, y, Math.max(0, Math.min(1, ratio)) * w, h, 4); ctx.fill();
+    if (label) {
+      ctx.font = 'bold ' + Math.max(10, h - 3) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff'; ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+      ctx.textBaseline = 'alphabetic';
+    }
+  },
+
+  skillSlot: function (ctx, x, y, s, emoji, key, cdRatio, disabled, locked) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; roundRect(ctx, x, y, s, s, 6); ctx.fill();
+    ctx.strokeStyle = locked ? '#3a3350' : '#8d7fb5'; ctx.lineWidth = 2; roundRect(ctx, x, y, s, s, 6); ctx.stroke();
+    if (!locked) {
+      const spr = SpriteSource.get(emoji, s * 0.6);
+      ctx.globalAlpha = disabled ? 0.35 : 1;
+      ctx.drawImage(spr, x + s / 2 - spr.width / 2, y + s / 2 - spr.height / 2);
+      ctx.globalAlpha = 1;
+      if (cdRatio > 0) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.beginPath(); ctx.moveTo(x + s / 2, y + s / 2);
+        ctx.arc(x + s / 2, y + s / 2, s * 0.7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cdRatio);
+        ctx.closePath(); ctx.save(); roundRect(ctx, x, y, s, s, 6); ctx.clip(); ctx.fill(); ctx.restore();
+      }
+    } else {
+      ctx.fillStyle = '#5a5170'; ctx.font = (s * 0.4) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('🔒', x + s / 2, y + s * 0.65);
+    }
+    ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#000'; ctx.fillRect(x, y, 14, 14);
+    ctx.fillStyle = '#ffe08a'; ctx.fillText(key, x + 3, y + 11);
+  },
+};
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+/** 색을 밝게(+)/어둡게(-) */
+function shade(hex, amt) {
+  const n = parseInt(String(hex || '#333333').replace('#', ''), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const f = function (c) { return Math.round(amt < 0 ? c * (1 + amt) : c + (255 - c) * amt); };
+  return 'rgb(' + f(r) + ',' + f(g) + ',' + f(b) + ')';
+}
+</script>

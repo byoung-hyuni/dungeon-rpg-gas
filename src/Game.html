@@ -1,0 +1,1437 @@
+<script>
+'use strict';
+/**
+ * Game — 게임 로직 전체 (화면 전환, 마을, 상점, 인벤토리, 전투, 랭킹)
+ * ------------------------------------------------------------
+ * 서버 호출은 게임 시작 / 저장 / 랭킹 때만 한다. 전투는 모두 브라우저에서 계산.
+ *
+ * 목차
+ *  1. 기본 설정·유틸
+ *  2. 캐릭터 데이터 (능력치, 인벤토리, 경험치, 저장)
+ *  3. 입력 (키보드)
+ *  4. 공통 UI (메뉴 목록, 모달, 토스트)
+ *  5. 화면: 로그인 / 직업 선택 / 마을 / 던전 선택 / 상점 / 인벤토리 / 스킬 / 랭킹 / 조작법
+ *  6. 던전 전투 엔진
+ *  7. 결과 / 사망 / 일시정지
+ *  8. 그리기(HUD) · 메인 루프
+ */
+
+/* ============ 1. 기본 설정·유틸 ============ */
+const W = 960, H = 540, FLOOR_TOP = 305, FLOOR_BOTTOM = 515, ROOM_W = 1400, GRAVITY = 1600;
+const GRADE_COLOR = { '일반': '#dddddd', '매직': '#68d5ed', '레어': '#b36bff', '유니크': '#ff5ec7', '에픽': '#ffb400' };
+const GRADE_RANK = ['F', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
+const GRADE_EXP_MUL = { SSS: 1.5, SS: 1.4, S: 1.3, A: 1.2, B: 1.1, C: 1.0, D: 0.9, F: 0.8 };
+const SLOT_NAME = { weapon: '무기', armor: '갑옷', accessory: '장신구' };
+const TYPE_NAME = { weapon: '무기', armor: '갑옷', accessory: '장신구', potion: '소모품' };
+
+const $ = function (s) { return document.querySelector(s); };
+const canvas = $('#game'), ctx = canvas.getContext('2d');
+const UIROOT = $('#ui');
+
+let DATA = null, CFG = {};
+const IDX = { items: {}, monsters: {}, dungeons: {}, classes: {} };
+let P = null;                                  // 현재 캐릭터 (저장되는 데이터)
+const S = { name: '', pin: '', saved: false, dirty: false, expectNew: false, lastSavedAt: '', saving: false, townSel: 0 };
+let screen = 'loading', screenKey = null, RUN = null, T = 0;
+
+const clamp = function (v, a, b) { return v < a ? a : v > b ? b : v; };
+const rnd = function (a, b) { return a + Math.random() * (b - a); };
+const pick = function (arr) { return arr[Math.floor(Math.random() * arr.length)]; };
+const num = function (v, d) { const n = Number(v); return isFinite(n) && v !== '' && v !== null ? n : (d || 0); };
+const fmt = function (n) { return Math.round(n).toLocaleString('ko-KR'); };
+const esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+const fmtTime = function (sec) { const m = Math.floor(sec / 60), s = sec - m * 60; return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1); };
+const store = { get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { } } };
+
+/** 클리어 등급·점수 (Code.gs 의 calcClearResult 와 같은 식 — 랭킹 점수는 서버 값이 기준) */
+function calcClearResult(dungeon, clearSec, hits, maxCombo, cfg) {
+  const par = Number(dungeon.rooms) * (Number(cfg.PAR_SEC_PER_ROOM) || 25);
+  const ratio = clearSec / par;
+  let pts = 100;
+  if (ratio > 0.6) pts -= (ratio - 0.6) * 50;
+  pts -= hits * 1.5;
+  pts += Math.min(maxCombo, 60) * 0.25;
+  pts = Math.max(0, Math.min(110, pts));
+  const grade = pts >= 100 ? 'SSS' : pts >= 92 ? 'SS' : pts >= 84 ? 'S' : pts >= 74 ? 'A' : pts >= 64 ? 'B' : pts >= 52 ? 'C' : pts >= 40 ? 'D' : 'F';
+  const score = Math.round((Number(dungeon.tier) || 1) * 1000 * (0.4 + pts / 100));
+  return { grade: grade, score: score, pts: Math.round(pts) };
+}
+
+function resize() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  const app = $('#app');
+  app.style.width = Math.floor(W * s) + 'px';
+  app.style.height = Math.floor(H * s) + 'px';
+  document.documentElement.style.setProperty('--u', s + 'px');
+}
+window.addEventListener('resize', resize);
+
+/* ============ 2. 캐릭터 데이터 ============ */
+function buildIndex() {
+  CFG = DATA.config || {};
+  DATA.items.forEach(function (it) { IDX.items[it.id] = it; });
+  DATA.monsters.forEach(function (m) { IDX.monsters[m.id] = m; });
+  DATA.dungeons.forEach(function (d) { IDX.dungeons[d.id] = d; });
+  DATA.classes.forEach(function (c) { IDX.classes[c.id] = c; });
+  DATA.levels.sort(function (a, b) { return a.level - b.level; });
+  DATA.dungeons.sort(function (a, b) { return num(a.tier) - num(b.tier); });
+}
+const maxLevel = function () { return Math.min(num(CFG.MAX_LEVEL, 25), DATA.levels.length); };
+const invSize = function () { return num(CFG.INVENTORY_SIZE, 30); };
+const levelRow = function (lv) { return DATA.levels[clamp(lv, 1, DATA.levels.length) - 1]; };
+const classOf = function () { return IDX.classes[P.classId] || DATA.classes[0]; };
+const classSkills = function (cid) { return DATA.skills.filter(function (s) { return s.classId === (cid || P.classId); }).sort(function (a, b) { return a.reqLevel - b.reqLevel; }); };
+
+function calcStats(p) {
+  p = p || P;
+  const L = levelRow(p.level), C = IDX.classes[p.classId] || DATA.classes[0];
+  const s = { atk: L.atk * num(C.atkMul, 1), def: L.def * num(C.defMul, 1), maxHp: L.hp * num(C.hpMul, 1), maxMp: L.mp * num(C.mpMul, 1), crit: num(CFG.CRIT_BASE, 5), speed: num(C.speed, 220) };
+  ['weapon', 'armor', 'accessory'].forEach(function (sl) {
+    const it = IDX.items[p.equip[sl]];
+    if (!it) return;
+    s.atk += num(it.atk); s.def += num(it.def); s.maxHp += num(it.hp); s.maxMp += num(it.mp); s.crit += num(it.crit);
+  });
+  ['atk', 'def', 'maxHp', 'maxMp'].forEach(function (k) { s[k] = Math.round(s[k]); });
+  return s;
+}
+
+function newCharacter(classId) {
+  P = { classId: classId, level: 1, exp: 0, gold: num(CFG.START_GOLD, 300), equip: { weapon: '', armor: '', accessory: '' }, inventory: [], cleared: 0, bestGrades: {}, playSec: 0 };
+  [['weapon', CFG.START_WEAPON], ['armor', CFG.START_ARMOR]].forEach(function (a) { if (IDX.items[a[1]]) P.equip[a[0]] = a[1]; });
+  String(CFG.START_ITEMS || '').split(',').forEach(function (t) {
+    const kv = t.split(':'), id = (kv[0] || '').trim();
+    if (IDX.items[id]) invAdd(id, num(kv[1], 1));
+  });
+}
+
+function invCount(id) { return P.inventory.reduce(function (a, s) { return a + (s.id === id ? s.qty : 0); }, 0); }
+function invAdd(id, qty) {
+  qty = qty || 1;
+  const it = IDX.items[id];
+  if (!it) return false;
+  if (it.type === 'potion') {
+    const s = P.inventory.find(function (x) { return x.id === id && x.qty < 99; });
+    if (s) { const a = Math.min(qty, 99 - s.qty); s.qty += a; qty -= a; }
+    while (qty > 0) { if (P.inventory.length >= invSize()) return false; const a2 = Math.min(qty, 99); P.inventory.push({ id: id, qty: a2 }); qty -= a2; }
+    return true;
+  }
+  for (let i = 0; i < qty; i++) { if (P.inventory.length >= invSize()) return false; P.inventory.push({ id: id, qty: 1 }); }
+  return true;
+}
+function invRemoveAt(i, qty) { const s = P.inventory[i]; s.qty -= (qty || 1); if (s.qty <= 0) P.inventory.splice(i, 1); }
+function invUse(id) { const i = P.inventory.findIndex(function (s) { return s.id === id; }); if (i < 0) return false; invRemoveAt(i, 1); return true; }
+
+/** 경험치 획득. 오른 레벨 수를 돌려준다 */
+function gainExp(n) {
+  const max = maxLevel();
+  if (P.level >= max) return 0;
+  P.exp += n;
+  let ups = 0;
+  while (P.level < max && P.exp >= num(levelRow(P.level).needExp, 1e9)) { P.exp -= num(levelRow(P.level).needExp); P.level++; ups++; }
+  if (P.level >= max) P.exp = 0;
+  return ups;
+}
+
+function isUnlocked(d) {
+  if (P.level < num(d.reqLevel, 1)) return false;
+  if (!d.prevDungeon) return true;
+  const prevIdx = DATA.dungeons.findIndex(function (x) { return x.id === d.prevDungeon; });
+  return !!P.bestGrades[d.prevDungeon] || P.cleared >= prevIdx + 1;
+}
+function lockReason(d) {
+  if (P.level < num(d.reqLevel, 1)) return 'Lv ' + d.reqLevel + ' 필요';
+  const prev = IDX.dungeons[d.prevDungeon];
+  return prev ? "'" + prev.name + "' 클리어 필요" : '';
+}
+
+function markDirty() { S.dirty = true; }
+function exportP() {
+  return { classId: P.classId, level: P.level, exp: P.exp, gold: P.gold, equip: P.equip, inventory: P.inventory, cleared: P.cleared, bestGrades: P.bestGrades, playSec: Math.floor(P.playSec) };
+}
+
+/** 저장하기: 이름 + PIN + 캐릭터 데이터를 시트에 기록 */
+function doSave() {
+  if (S.saving) return Promise.resolve(false);
+  S.saving = true;
+  toast('💾 저장 중...');
+  return Api.save(S.name, S.pin, exportP(), S.expectNew).then(function (r) {
+    if (!r.ok) { toast('❌ ' + r.message, 4000); return false; }
+    S.saved = true; S.expectNew = false; S.dirty = false; S.lastSavedAt = r.savedAt;
+    toast('💾 저장 완료 (' + r.savedAt + ')');
+    return true;
+  }).catch(function (e) {
+    toast('❌ 저장 실패: ' + e.message, 4000); return false;
+  }).then(function (ok) {
+    S.saving = false;
+    if (screen === 'town') showTown();
+    return ok;
+  });
+}
+
+/* ============ 3. 입력 ============ */
+const Keys = { down: new Set(), pressed: new Set() };
+const GAME_CODES = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'KeyX', 'KeyC', 'KeyZ', 'Tab']);
+let modalHandler = null;
+const pressed = function (code) { return Keys.pressed.has(code); };
+const held = function (code) { return Keys.down.has(code); };
+
+document.addEventListener('keydown', function (e) {
+  hideFocusHint();
+  const inInput = e.target && e.target.tagName === 'INPUT';
+  if (modalHandler) { e.preventDefault(); if (!e.repeat) modalHandler(e); return; }
+  if (!inInput && (GAME_CODES.has(e.code) || screen === 'game')) e.preventDefault();
+  if (screen === 'game') {
+    if (!e.repeat) Keys.pressed.add(e.code);
+    Keys.down.add(e.code);
+    if (!e.repeat && (e.code === 'ArrowLeft' || e.code === 'ArrowRight') && RUN) {   // 같은 방향 두 번 = 대시
+      const p = RUN.player, now = performance.now();
+      if (now - (p.lastTap[e.code] || 0) < 260) p.dash = true;
+      p.lastTap[e.code] = now;
+    }
+    if (e.code === 'Escape' && !e.repeat && RUN && RUN.state === 'play') showPause();
+    return;
+  }
+  if (screenKey) screenKey(e);
+});
+document.addEventListener('keyup', function (e) { Keys.down.delete(e.code); });
+window.addEventListener('blur', function () { Keys.down.clear(); showFocusHint(); });
+window.addEventListener('focus', hideFocusHint);
+$('#app').addEventListener('mousedown', function (e) { if (e.target.tagName !== 'INPUT') { window.focus(); } hideFocusHint(); });
+function showFocusHint() { if (screen === 'game' || screen === 'town') $('#focusHint').classList.remove('hidden'); }
+function hideFocusHint() { $('#focusHint').classList.add('hidden'); }
+
+/* ============ 4. 공통 UI ============ */
+function setScreen(name, html, onKey) {
+  screen = name;
+  UIROOT.innerHTML = html || '';
+  screenKey = onKey || null;
+  Keys.down.clear(); Keys.pressed.clear();
+}
+
+function toast(msg, ms) {
+  const d = document.createElement('div');
+  d.innerHTML = msg;
+  $('#toast').appendChild(d);
+  setTimeout(function () { d.remove(); }, ms || 2200);
+  while ($('#toast').children.length > 4) $('#toast').firstChild.remove();
+}
+
+/**
+ * 선택 모달. options: [{ label, value, keys:['KeyY','Enter'] }]
+ * 방향키 ←→/↑↓로 고르고 Enter, 또는 지정 키를 바로 누른다.
+ */
+function choice(html, options) {
+  return new Promise(function (resolve) {
+    let sel = 0;
+    const m = $('#modal');
+    function render() {
+      m.innerHTML = '<div class="panel col"><div>' + html + '</div><ul class="menu">' + options.map(function (o, i) {
+        return '<li data-i="' + i + '" class="' + (i === sel ? 'sel' : '') + '"><span class="grow">' + o.label + '</span></li>';
+      }).join('') + '</ul></div>';
+      m.querySelectorAll('li').forEach(function (li) { li.onclick = function () { done(options[+li.dataset.i].value); }; });
+    }
+    function done(v) { modalHandler = null; m.classList.add('hidden'); m.innerHTML = ''; resolve(v); }
+    modalHandler = function (e) {
+      if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') { sel = (sel + options.length - 1) % options.length; render(); return; }
+      if (e.code === 'ArrowDown' || e.code === 'ArrowRight') { sel = (sel + 1) % options.length; render(); return; }
+      if (e.code === 'Enter' || e.code === 'Space') { done(options[sel].value); return; }
+      for (let i = 0; i < options.length; i++) if ((options[i].keys || []).indexOf(e.code) >= 0) { done(options[i].value); return; }
+    };
+    m.classList.remove('hidden');
+    render();
+  });
+}
+function confirmBox(html) {
+  return choice(html, [{ label: '예 <span class="key">Y</span>', value: true, keys: ['KeyY'] }, { label: '아니오 <span class="key">N</span>', value: false, keys: ['KeyN', 'Escape'] }]);
+}
+
+/**
+ * 키보드로 움직이는 목록. items: [{ html, disabled }]
+ * opts: { sel, onMove(i), onSelect(i, e) }  →  반환값 { key(e), sel, render() }
+ */
+function makeList(container, items, opts) {
+  const L = { sel: clamp(opts.sel || 0, 0, Math.max(0, items.length - 1)) };
+  L.render = function () {
+    container.innerHTML = items.length ? items.map(function (it, i) {
+      return '<li data-i="' + i + '" class="' + (i === L.sel ? 'sel ' : '') + (it.disabled ? 'dis' : '') + '">' + it.html + '</li>';
+    }).join('') : '<li class="dis"><span class="muted">(비어 있음)</span></li>';
+    container.querySelectorAll('li[data-i]').forEach(function (li) {
+      li.onclick = function (e) { const i = +li.dataset.i; if (i === L.sel) { opts.onSelect && opts.onSelect(i, e); } else { L.sel = i; L.render(); opts.onMove && opts.onMove(i); } };
+    });
+    const s = container.querySelector('li.sel');
+    if (s && s.scrollIntoView) s.scrollIntoView({ block: 'nearest' });
+  };
+  L.key = function (e) {
+    if (!items.length) return false;
+    if (e.code === 'ArrowUp') { L.sel = (L.sel + items.length - 1) % items.length; L.render(); opts.onMove && opts.onMove(L.sel); return true; }
+    if (e.code === 'ArrowDown') { L.sel = (L.sel + 1) % items.length; L.render(); opts.onMove && opts.onMove(L.sel); return true; }
+    if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) { opts.onSelect && opts.onSelect(L.sel, e); return true; }
+    return false;
+  };
+  L.render();
+  if (opts.onMove) opts.onMove(L.sel);
+  return L;
+}
+
+function itemLine(it, qty, extra) {
+  if (!it) return '<span class="muted">(없음)</span>';
+  return '<span class="grow"><span style="font-size:1.2em">' + esc(it.emoji) + '</span> <span class="g-' + esc(it.grade) + '">' + esc(it.name) + '</span>' +
+    (qty > 1 ? ' <span class="muted">×' + qty + '</span>' : '') + '</span>' + (extra || '');
+}
+
+/** 아이템 상세 + 착용 장비와 비교 */
+function itemDetail(it, priceLabel) {
+  if (!it) return '<div class="muted">아이템을 선택하세요.</div>';
+  const lvOk = P.level >= num(it.reqLevel, 1);
+  let h = '<div class="big">' + esc(it.emoji) + '</div><div class="title g-' + esc(it.grade) + '" style="font-size:1.25em">' + esc(it.name) + '</div>' +
+    '<div class="muted">' + esc(it.grade) + ' ' + (TYPE_NAME[it.type] || it.type) + ' · <span class="' + (lvOk ? '' : 'down') + '">착용 Lv ' + num(it.reqLevel, 1) + '</span></div><hr style="border-color:#3a3350">';
+  const cur = it.type !== 'potion' ? IDX.items[P.equip[it.type]] : null;
+  const rows = [['atk', '공격력'], ['def', '방어력'], ['hp', '최대 HP'], ['mp', '최대 MP'], ['crit', '치명타 %'], ['healHp', 'HP 회복 %'], ['healMp', 'MP 회복 %']];
+  rows.forEach(function (r) {
+    const v = num(it[r[0]]), c = cur ? num(cur[r[0]]) : 0;
+    if (!v && !c) return;
+    const diff = v - c;
+    h += '<div>' + r[1] + ' <b>+' + v + '</b>' + (it.type !== 'potion' && diff ? ' <span class="' + (diff > 0 ? 'up' : 'down') + '">(' + (diff > 0 ? '▲' : '▼') + Math.abs(diff) + ')</span>' : '') + '</div>';
+  });
+  h += '<p class="muted">' + esc(it.desc) + '</p>';
+  if (cur && cur.id !== it.id) h += '<div class="muted" style="font-size:.85em">현재 착용: ' + esc(cur.emoji) + ' ' + esc(cur.name) + '</div>';
+  if (priceLabel) h += '<div style="margin-top:8px">' + priceLabel + '</div>';
+  return h;
+}
+
+/* ============ 5. 화면 ============ */
+function showLoading(msg) {
+  setScreen('loading', '<div class="screen"><div class="loading">' + msg + '</div></div>');
+}
+
+function showError(msg) {
+  setScreen('error', '<div class="screen"><div class="panel login col"><h1 style="font-size:28px">⚠️ 오류</h1><div>' + esc(msg) + '</div><div class="muted">스프레드시트 메뉴 [🎮 던전 RPG &gt; 1) 초기 설정]을 실행했는지 확인하세요.</div></div></div>');
+}
+
+/* ---- 로그인 ---- */
+function showLogin(errMsg) {
+  RUN = null; P = null;
+  const title = esc(CFG.GAME_TITLE || '던전 마스터');
+  setScreen('login',
+    '<div class="screen"><div class="panel login col">' +
+    '<h1>⚔️ ' + title + '</h1><div class="muted" style="margin-bottom:6px">이름과 PIN 4자리를 입력하세요</div>' +
+    '<input id="inName" maxlength="12" placeholder="캐릭터 이름 (한글/영문 2~12자)" autocomplete="off">' +
+    '<input id="inPin" class="pin" maxlength="4" inputmode="numeric" type="password" placeholder="PIN" autocomplete="off">' +
+    '<div class="err" id="loginErr">' + esc(errMsg || '') + '</div>' +
+    '<button class="btn" id="btnLogin">시작하기 <span class="key">Enter</span></button>' +
+    '<div class="muted" style="font-size:.85em;line-height:1.6">처음이면 새 이름과 사용할 PIN을 정해서 입력하세요.<br>마을에서 <b>💾 저장하기</b>를 하면 PIN이 함께 저장되고,<br>다음에 같은 이름·PIN으로 이어서 할 수 있어요.</div>' +
+    (Api.offline ? '<div class="gold" style="font-size:.8em">로컬 미리보기 모드 — 데이터는 이 브라우저에만 저장됩니다</div>' : '') +
+    '</div></div>');
+  const inName = $('#inName'), inPin = $('#inPin');
+  inName.value = store.get('dm_last_name') || '';
+  (inName.value ? inPin : inName).focus();
+  inPin.addEventListener('input', function () { inPin.value = inPin.value.replace(/\D/g, '').slice(0, 4); });
+  inName.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); inPin.focus(); } });
+  inPin.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  $('#btnLogin').onclick = submit;
+  let busy = false;
+  function submit() {
+    if (busy) return;
+    const name = inName.value.trim(), pin = inPin.value;
+    const err = $('#loginErr');
+    if (!/^[가-힣A-Za-z0-9_]{2,12}$/.test(name)) { err.textContent = '이름은 한글·영문·숫자·_ 로 2~12자여야 합니다.'; inName.focus(); return; }
+    if (!/^\d{4}$/.test(pin)) { err.textContent = 'PIN은 숫자 4자리입니다.'; inPin.focus(); return; }
+    busy = true; err.textContent = '확인 중...';
+    Api.login(name, pin).then(function (r) {
+      busy = false;
+      if (r.status === 'ok') {
+        store.set('dm_last_name', name);
+        S.name = r.player.name; S.pin = pin; S.saved = true; S.dirty = false; S.expectNew = false; S.lastSavedAt = r.player.updatedAt; S.townSel = 0;
+        P = r.player;
+        P.equip = Object.assign({ weapon: '', armor: '', accessory: '' }, P.equip || {});
+        showTown();
+        toast('👋 ' + esc(S.name) + '님, 다시 오신 걸 환영합니다! (Lv ' + P.level + ')');
+      } else if (r.status === 'new') {
+        store.set('dm_last_name', name);
+        S.name = name; S.pin = pin; S.saved = false; S.expectNew = true; S.townSel = 0;
+        showClassSelect();
+      } else {
+        err.textContent = r.message || '로그인 실패';
+        inPin.value = ''; inPin.focus();
+      }
+    }).catch(function (e) { busy = false; err.textContent = e.message; });
+  }
+}
+
+/* ---- 직업 선택 ---- */
+function showClassSelect() {
+  let sel = 0;
+  const cls = DATA.classes;
+  function render() {
+    const c = cls[sel];
+    const sk = classSkills(c.id);
+    setScreen('classSelect',
+      '<div class="screen"><div class="panel box" style="height:auto;padding:18px 20px">' +
+      '<h2 style="margin:0 0 4px;color:var(--gold)">직업 선택</h2><div class="muted">새 캐릭터 <b>' + esc(S.name) + '</b>의 직업을 고르세요. (←→ 선택, Enter 결정, Esc 뒤로)</div>' +
+      '<div class="row" style="margin:14px 0;justify-content:center">' + cls.map(function (x, i) {
+        return '<div class="panel" data-i="' + i + '" style="padding:14px 22px;text-align:center;cursor:pointer;' + (i === sel ? 'border-color:var(--gold)' : 'opacity:.6') + '"><div style="font-size:54px">' + esc(x.emoji) + '</div><b>' + esc(x.name) + '</b></div>';
+      }).join('') + '</div>' +
+      '<div class="row"><div class="detail" style="flex:1"><b>' + esc(c.name) + '</b><p>' + esc(c.desc) + '</p>' +
+      '<div class="stat"><span>HP 배율 <b>×' + c.hpMul + '</b></span><span>MP 배율 <b>×' + c.mpMul + '</b></span><span>공격 배율 <b>×' + c.atkMul + '</b></span><span>방어 배율 <b>×' + c.defMul + '</b></span></div></div>' +
+      '<div class="detail" style="flex:1.2"><b>배우는 스킬</b><div style="margin-top:6px;line-height:1.8">' + sk.map(function (s) { return esc(s.emoji) + ' ' + esc(s.name) + ' <span class="muted">Lv' + s.reqLevel + ' · <span class="key">' + esc(s.key) + '</span></span>'; }).join('<br>') + '</div></div></div>' +
+      '<div style="text-align:center;margin-top:12px"><button class="btn" id="btnPick">' + esc(c.name) + '(으)로 시작 <span class="key">Enter</span></button></div>' +
+      '</div></div>', onKey);
+    UIROOT.querySelectorAll('[data-i]').forEach(function (el) { el.onclick = function () { sel = +el.dataset.i; render(); }; });
+    $('#btnPick').onclick = confirm;
+  }
+  function confirm() {
+    newCharacter(cls[sel].id);
+    S.dirty = true;
+    showTown();
+    toast('✨ 새 캐릭터 생성! 마을에서 <b>💾 저장하기</b>를 해야 기록이 남아요.', 4000);
+  }
+  function onKey(e) {
+    if (e.code === 'ArrowLeft') { sel = (sel + cls.length - 1) % cls.length; render(); }
+    else if (e.code === 'ArrowRight') { sel = (sel + 1) % cls.length; render(); }
+    else if (e.code === 'Enter' && !e.repeat) confirm();
+    else if (e.code === 'Escape') showLogin();
+  }
+  render();
+}
+
+/* ---- 마을 ---- */
+function charCard() {
+  const st = calcStats(), need = num(levelRow(P.level).needExp);
+  const expPct = P.level >= maxLevel() ? 100 : need ? (P.exp / need * 100) : 0;
+  const cleared = DATA.dungeons.filter(function (d) { return P.bestGrades[d.id]; }).length;
+  return '<div class="panel charcard">' +
+    '<div class="row" style="align-items:center"><div class="face">' + esc(classOf().emoji) + '</div><div><div class="title" style="font-size:1.25em">' + esc(S.name) + '</div>' +
+    '<div class="muted">' + esc(classOf().name) + ' · <b style="color:#fff">Lv ' + P.level + '</b>' + (P.level >= maxLevel() ? ' <span class="gold">MAX</span>' : '') + '</div></div></div>' +
+    '<div class="bar"><i style="width:' + expPct.toFixed(1) + '%"></i></div><div class="muted" style="font-size:.8em">EXP ' + fmt(P.exp) + ' / ' + (P.level >= maxLevel() ? '-' : fmt(need)) + '</div>' +
+    '<div class="stat"><span>HP <b>' + fmt(st.maxHp) + '</b></span><span>MP <b>' + fmt(st.maxMp) + '</b></span><span>공격력 <b>' + fmt(st.atk) + '</b></span><span>방어력 <b>' + fmt(st.def) + '</b></span><span>치명타 <b>' + st.crit + '%</b></span><span>골드 <b class="gold">' + fmt(P.gold) + '</b></span></div>' +
+    '<div style="margin-top:10px;font-size:.88em">클리어 던전 <b>' + cleared + ' / ' + DATA.dungeons.length + '</b></div>' +
+    '<div style="margin-top:8px"><span class="savebadge ' + (S.dirty ? 'dirty">● 저장 안 된 진행 있음' : 'clean">✔ 저장됨' + (S.lastSavedAt ? ' ' + esc(S.lastSavedAt) : '')) + '</span></div>' +
+    '</div>';
+}
+
+function showTown() {
+  RUN = null;
+  const items = [
+    { icon: '⚔️', label: '던전 입장', fn: showDungeonSelect },
+    { icon: '🏪', label: '상점', fn: showShop },
+    { icon: '🎒', label: '인벤토리 / 장비', hot: 'I', fn: showInventory },
+    { icon: '📜', label: '스킬 정보', hot: 'K', fn: showSkills },
+    { icon: '🏆', label: '랭킹', hot: 'R', fn: showRanking },
+    { icon: '💾', label: '저장하기', fn: function () { doSave(); } },
+    { icon: '❔', label: '조작법', hot: 'H', fn: showHelp },
+    { icon: '🚪', label: '로그아웃', fn: logout },
+  ];
+  setScreen('town',
+    '<div class="screen left"><div class="panel town-menu"><h2>🏘️ 마을</h2><ul class="menu" id="townMenu"></ul></div></div>' + charCard() +
+    '<div class="hintbar"><span><span class="key">↑</span><span class="key">↓</span> 선택</span><span><span class="key">Enter</span> 결정</span><span><span class="key">I</span> 인벤토리</span><span><span class="key">K</span> 스킬</span><span><span class="key">R</span> 랭킹</span><span><span class="key">H</span> 조작법</span></div>', onKey);
+  const list = makeList($('#townMenu'), items.map(function (it) {
+    return { html: '<span class="grow">' + it.icon + ' ' + it.label + '</span>' + (it.hot ? '<span class="key">' + it.hot + '</span>' : '') };
+  }), { sel: S.townSel, onMove: function (i) { S.townSel = i; }, onSelect: function (i) { items[i].fn(); } });
+  function onKey(e) {
+    if (list.key(e)) return;
+    const hot = { KeyI: showInventory, KeyK: showSkills, KeyR: showRanking, KeyH: showHelp }[e.code];
+    if (hot) hot();
+  }
+}
+
+function logout() {
+  const go = function () { S.name = ''; S.pin = ''; showLogin(); };
+  if (!S.dirty) { confirmBox('로그아웃할까요?').then(function (ok) { if (ok) go(); }); return; }
+  choice('<b>저장하지 않은 진행이 있습니다.</b><br><span class="muted">저장하지 않으면 마지막 저장 이후의 진행이 사라집니다.</span>', [
+    { label: '💾 저장하고 로그아웃 <span class="key">Y</span>', value: 'save', keys: ['KeyY'] },
+    { label: '저장하지 않고 로그아웃 <span class="key">N</span>', value: 'nosave', keys: ['KeyN'] },
+    { label: '취소 <span class="key">Esc</span>', value: 'cancel', keys: ['Escape'] },
+  ]).then(function (v) {
+    if (v === 'save') doSave().then(function (ok) { if (ok) go(); });
+    else if (v === 'nosave') go();
+  });
+}
+
+/* ---- 던전 선택 ---- */
+function showDungeonSelect() {
+  const ds = DATA.dungeons;
+  let firstOpen = 0;
+  ds.forEach(function (d, i) { if (isUnlocked(d)) firstOpen = i; });
+  setScreen('dungeonSelect',
+    '<div class="screen"><div class="panel box"><div class="head"><h2>⚔️ 던전 선택</h2><span class="muted"><span class="key">Enter</span> 입장 · <span class="key">Esc</span> 마을</span></div>' +
+    '<div class="split" style="margin-top:8px"><ul class="menu list" id="dList"></ul><div class="detail" id="dDetail"></div></div></div></div>', onKey);
+  const list = makeList($('#dList'), ds.map(function (d) {
+    const open = isUnlocked(d), g = P.bestGrades[d.id];
+    return { disabled: !open, html: '<span class="grow"><span style="font-size:1.3em">' + esc(d.emoji) + '</span> ' + esc(d.name) + ' <span class="sub">권장 Lv ' + esc(d.recLevel) + '</span></span>' +
+      (open ? (g ? '<span class="gold">' + g + '</span>' : '<span class="sub">미클리어</span>') : '<span class="sub">🔒 ' + esc(lockReason(d)) + '</span>') };
+  }), {
+    sel: firstOpen,
+    onMove: function (i) {
+      const d = ds[i], boss = IDX.monsters[d.bossId];
+      const mobs = String(d.monsters).split(',').map(function (id) { const m = IDX.monsters[id.trim()]; return m ? esc(m.emoji) + ' ' + esc(m.name) : ''; }).join(', ');
+      $('#dDetail').innerHTML = '<div class="big">' + esc(d.emoji) + '</div><div class="title" style="font-size:1.3em">' + esc(d.name) + ' <span class="muted" style="font-size:.7em">단계 ' + d.tier + '</span></div><p class="muted">' + esc(d.desc) + '</p>' +
+        '<div class="kv"><span>입장 레벨</span><span>Lv ' + d.reqLevel + '</span><span>방 개수</span><span>' + d.rooms + ' (마지막 방 보스)</span><span>최고 등급</span><span class="gold">' + (P.bestGrades[d.id] || '-') + '</span><span>클리어 보상</span><span>EXP ' + fmt(d.clearExp) + ' · ' + fmt(d.clearGold) + 'G</span></div>' +
+        '<div>등장: ' + mobs + '</div><div style="margin-top:6px">보스: <span style="font-size:1.4em">' + (boss ? esc(boss.emoji) : '') + '</span> <b>' + (boss ? esc(boss.name) : '') + '</b></div>' +
+        (isUnlocked(d) ? '<div style="margin-top:12px"><button class="btn" id="btnEnter">입장하기 <span class="key">Enter</span></button></div>' : '<div class="down" style="margin-top:12px">🔒 ' + esc(lockReason(d)) + '</div>');
+      const b = $('#btnEnter'); if (b) b.onclick = function () { tryEnter(i); };
+    },
+    onSelect: function (i) { tryEnter(i); },
+  });
+  function tryEnter(i) {
+    const d = ds[i];
+    if (!isUnlocked(d)) { toast('🔒 ' + lockReason(d)); return; }
+    startDungeon(d);
+  }
+  function onKey(e) { if (list.key(e)) return; if (e.code === 'Escape') showTown(); }
+}
+
+/* ---- 상점 ---- */
+function showShop(tab, keepSel) {
+  tab = tab || 'buy';
+  setScreen('shop',
+    '<div class="screen"><div class="panel box"><div class="head"><h2>🏪 상점</h2><span>보유 골드 <b class="gold">' + fmt(P.gold) + 'G</b></span></div>' +
+    '<div class="tabs"><span class="' + (tab === 'buy' ? 'on' : '') + '" data-t="buy">구매</span><span class="' + (tab === 'sell' ? 'on' : '') + '" data-t="sell">판매</span>' +
+    '<span class="muted" style="margin-left:auto;background:none">←→ 탭 · Enter ' + (tab === 'buy' ? '구매 (Shift+Enter ×10)' : '판매') + ' · Esc 마을 · 인벤토리 ' + P.inventory.length + '/' + invSize() + '</span></div>' +
+    '<div class="split"><ul class="menu list" id="sList"></ul><div class="detail" id="sDetail"></div></div></div></div>', onKey);
+  UIROOT.querySelectorAll('[data-t]').forEach(function (el) { el.onclick = function () { showShop(el.dataset.t); }; });
+  let list;
+  if (tab === 'buy') {
+    const goods = DATA.items.filter(function (it) { return String(it.shop).toUpperCase() === 'Y'; }).sort(function (a, b) { return (a.type === 'potion' ? 0 : 1) - (b.type === 'potion' ? 0 : 1) || a.reqLevel - b.reqLevel; });
+    list = makeList($('#sList'), goods.map(function (it) {
+      return { disabled: P.gold < num(it.price), html: itemLine(it, 0, '<span class="' + (P.gold < num(it.price) ? 'down' : 'gold') + '">' + fmt(it.price) + 'G</span>') };
+    }), {
+      sel: keepSel,
+      onMove: function (i) { const it = goods[i]; $('#sDetail').innerHTML = itemDetail(it, '가격 <b class="gold">' + fmt(it.price) + 'G</b>' + (it.type === 'potion' ? ' · 보유 ' + invCount(it.id) : '')); },
+      onSelect: function (i, e) {
+        const it = goods[i], n = (e && e.shiftKey && it.type === 'potion') ? 10 : 1, cost = num(it.price) * n;
+        if (P.gold < cost) { toast('골드가 부족합니다.'); return; }
+        if (!invAdd(it.id, n)) { toast('인벤토리가 가득 찼습니다.'); return; }
+        P.gold -= cost; markDirty();
+        toast(esc(it.emoji) + ' ' + esc(it.name) + (n > 1 ? ' ×' + n : '') + ' 구매 (-' + fmt(cost) + 'G)');
+        showShop('buy', i);
+      },
+    });
+  } else {
+    const inv = P.inventory;
+    list = makeList($('#sList'), inv.map(function (s) {
+      const it = IDX.items[s.id];
+      return { html: itemLine(it, s.qty, '<span class="gold">' + fmt(Math.floor(num(it.price) * 0.3)) + 'G</span>') };
+    }), {
+      sel: keepSel,
+      onMove: function (i) { const s = inv[i]; if (!s) return; const it = IDX.items[s.id]; $('#sDetail').innerHTML = itemDetail(it, '판매가 <b class="gold">' + fmt(Math.floor(num(it.price) * 0.3)) + 'G</b>'); },
+      onSelect: function (i) {
+        const s = inv[i]; if (!s) return;
+        const it = IDX.items[s.id], price = Math.floor(num(it.price) * 0.3);
+        invRemoveAt(i, 1); P.gold += price; markDirty();
+        toast(esc(it.emoji) + ' ' + esc(it.name) + ' 판매 (+' + fmt(price) + 'G)');
+        showShop('sell', Math.min(i, P.inventory.length - 1));
+      },
+    });
+    if (!inv.length) $('#sDetail').innerHTML = '<div class="muted">팔 물건이 없습니다.</div>';
+  }
+  function onKey(e) {
+    if (list.key(e)) return;
+    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'Tab') showShop(tab === 'buy' ? 'sell' : 'buy');
+    else if (e.code === 'Escape') showTown();
+  }
+}
+
+/* ---- 인벤토리 / 장비 ---- */
+function showInventory(keepSel) {
+  const slots = ['weapon', 'armor', 'accessory'];
+  const rows = slots.map(function (sl) { return { kind: 'eq', slot: sl }; }).concat(P.inventory.map(function (s, i) { return { kind: 'inv', i: i }; }));
+  setScreen('inventory',
+    '<div class="screen"><div class="panel box"><div class="head"><h2>🎒 인벤토리 / 장비</h2><span class="muted">Enter 착용·해제 · Esc 마을 · ' + P.inventory.length + '/' + invSize() + '칸</span></div>' +
+    '<div class="split" style="margin-top:8px"><ul class="menu list" id="iList"></ul><div class="detail" id="iDetail"></div></div></div></div>', onKey);
+  const list = makeList($('#iList'), rows.map(function (r) {
+    if (r.kind === 'eq') {
+      const it = IDX.items[P.equip[r.slot]];
+      return { html: '<span class="sub" style="width:4.5em">[' + SLOT_NAME[r.slot] + ']</span>' + itemLine(it, 0, it ? '<span class="sub">착용 중</span>' : '') };
+    }
+    const s = P.inventory[r.i], it = IDX.items[s.id];
+    return { html: itemLine(it, s.qty, it.type !== 'potion' && P.level < num(it.reqLevel) ? '<span class="down sub">Lv' + it.reqLevel + '</span>' : '') };
+  }), {
+    sel: keepSel,
+    onMove: function (i) {
+      const r = rows[i];
+      const it = r.kind === 'eq' ? IDX.items[P.equip[r.slot]] : IDX.items[P.inventory[r.i].id];
+      let act = '';
+      if (it) act = r.kind === 'eq' ? '<span class="key">Enter</span> 장착 해제' : (it.type === 'potion' ? '<span class="muted">던전에서 <span class="key">1</span>/<span class="key">2</span> 키로 사용</span>' : '<span class="key">Enter</span> 착용');
+      const st = calcStats();
+      $('#iDetail').innerHTML = (it ? itemDetail(it, act) : '<div class="muted">빈 슬롯입니다.</div>') +
+        '<hr style="border-color:#3a3350"><div class="stat"><span>공격력 <b>' + st.atk + '</b></span><span>방어력 <b>' + st.def + '</b></span><span>HP <b>' + st.maxHp + '</b></span><span>MP <b>' + st.maxMp + '</b></span><span>치명타 <b>' + st.crit + '%</b></span></div>';
+    },
+    onSelect: function (i) {
+      const r = rows[i];
+      if (r.kind === 'eq') {
+        if (!P.equip[r.slot]) return;
+        if (P.inventory.length >= invSize()) { toast('인벤토리가 가득 찼습니다.'); return; }
+        P.inventory.push({ id: P.equip[r.slot], qty: 1 }); P.equip[r.slot] = ''; markDirty();
+        showInventory(i); return;
+      }
+      const s = P.inventory[r.i], it = IDX.items[s.id];
+      if (it.type === 'potion') { toast('포션은 던전에서 1 / 2 키로 사용합니다.'); return; }
+      if (P.level < num(it.reqLevel, 1)) { toast('Lv ' + it.reqLevel + '부터 착용할 수 있습니다.'); return; }
+      const old = P.equip[it.type];
+      P.inventory.splice(r.i, 1);
+      if (old) P.inventory.splice(r.i, 0, { id: old, qty: 1 });
+      P.equip[it.type] = it.id; markDirty();
+      toast(esc(it.emoji) + ' ' + esc(it.name) + ' 착용');
+      showInventory(slots.indexOf(it.type));
+    },
+  });
+  function onKey(e) { if (list.key(e)) return; if (e.code === 'Escape' || e.code === 'KeyI') showTown(); }
+}
+
+/* ---- 스킬 정보 ---- */
+function showSkills() {
+  const sk = classSkills();
+  const TYPE_DESC = { upper: '띄우기', dash: '돌진', spin: '회전 다단히트', wave: '투사체', buff: '강화', slam: '광역 내려찍기', ultimate: '각성기' };
+  setScreen('skills',
+    '<div class="screen"><div class="panel box"><div class="head"><h2>📜 스킬 — ' + esc(classOf().name) + '</h2><span class="muted">Esc 마을</span></div>' +
+    '<div class="split" style="margin-top:8px"><ul class="menu list" id="kList"></ul><div class="detail" id="kDetail"></div></div></div></div>', onKey);
+  const list = makeList($('#kList'), sk.map(function (s) {
+    const ok = P.level >= s.reqLevel;
+    return { disabled: !ok, html: '<span class="grow"><span style="font-size:1.2em">' + esc(s.emoji) + '</span> ' + esc(s.name) + '</span><span class="key">' + esc(s.key) + '</span><span class="sub">' + (ok ? '습득' : 'Lv ' + s.reqLevel) + '</span>' };
+  }), {
+    onMove: function (i) {
+      const s = sk[i];
+      $('#kDetail').innerHTML = '<div class="big">' + esc(s.emoji) + '</div><div class="title" style="font-size:1.25em">' + esc(s.name) + '</div><div class="muted">' + (TYPE_DESC[s.type] || s.type) + ' · 단축키 <span class="key">' + esc(s.key) + '</span></div>' +
+        '<div class="kv"><span>습득 레벨</span><span>Lv ' + s.reqLevel + '</span><span>MP 소모</span><span>' + s.mp + '</span><span>쿨타임</span><span>' + s.cooldown + '초</span>' +
+        (s.type === 'buff' ? '<span>효과</span><span>공격력 +' + s.power + '% / ' + s.duration + '초</span>' : '<span>데미지</span><span>' + s.dmgPct + '%' + (s.hits > 1 ? ' × ' + s.hits + '회' : '') + '</span>') + '</div><p class="muted">' + esc(s.desc) + '</p>';
+    },
+  });
+  function onKey(e) { if (list.key(e)) return; if (e.code === 'Escape' || e.code === 'KeyK') showTown(); }
+}
+
+/* ---- 랭킹 ---- */
+let rankingCache = null;
+function showRanking(tabIdx) {
+  tabIdx = tabIdx || 0;
+  const tabs = [{ id: 'overall', name: '종합' }].concat(DATA.dungeons.map(function (d) { return { id: d.id, name: d.emoji + ' ' + d.name }; }));
+  setScreen('ranking',
+    '<div class="screen"><div class="panel box"><div class="head"><h2>🏆 랭킹</h2><span class="muted">←→ 탭 · <span class="key">Space</span> 새로고침 · Esc 마을</span></div>' +
+    '<div class="tabs">' + tabs.map(function (t, i) { return '<span data-i="' + i + '" class="' + (i === tabIdx ? 'on' : '') + '">' + esc(t.name) + '</span>'; }).join('') + '</div>' +
+    '<div class="list" style="margin:0 10px;flex:1" id="rBody"><div class="loading" style="padding:20px">불러오는 중...</div></div></div></div>', onKey);
+  UIROOT.querySelectorAll('.tabs [data-i]').forEach(function (el) { el.onclick = function () { showRanking(+el.dataset.i); }; });
+  const load = rankingCache ? Promise.resolve(rankingCache) : Api.getRankings();
+  load.then(function (rk) {
+    rankingCache = rk;
+    if (screen !== 'ranking') return;
+    const me = S.name.toLowerCase(), medal = function (i) { return ['🥇', '🥈', '🥉'][i] || (i + 1); };
+    let h;
+    if (tabIdx === 0) {
+      const L = rk.overall || [];
+      h = '<table class="rank"><tr><th>순위</th><th>이름</th><th>직업</th><th>최고 Lv</th><th>클리어 던전</th><th>종합 점수</th></tr>' +
+        (L.length ? L.map(function (r, i) { return '<tr class="' + (r.name.toLowerCase() === me ? 'me' : '') + '"><td class="medal">' + medal(i) + '</td><td>' + esc(r.name) + '</td><td>' + esc((IDX.classes[r.classId] || {}).name || r.classId) + '</td><td>' + r.level + '</td><td>' + r.clears + '</td><td><b>' + fmt(r.score) + '</b></td></tr>'; }).join('') : '<tr><td colspan="6" class="muted">아직 기록이 없습니다. 첫 번째 주인공이 되어 보세요!</td></tr>') + '</table>';
+    } else {
+      const L = (rk.byDungeon || {})[tabs[tabIdx].id] || [];
+      h = '<table class="rank"><tr><th>순위</th><th>이름</th><th>Lv</th><th>등급</th><th>클리어 시간</th><th>피격</th><th>최대 콤보</th><th>점수</th></tr>' +
+        (L.length ? L.map(function (r, i) { return '<tr class="' + (r.name.toLowerCase() === me ? 'me' : '') + '"><td class="medal">' + medal(i) + '</td><td>' + esc(r.name) + '</td><td>' + r.level + '</td><td class="gold"><b>' + esc(r.grade) + '</b></td><td>' + fmtTime(r.clearSec) + '</td><td>' + r.hits + '</td><td>' + r.maxCombo + '</td><td><b>' + fmt(r.score) + '</b></td></tr>'; }).join('') : '<tr><td colspan="8" class="muted">아직 기록이 없습니다.</td></tr>') + '</table>';
+    }
+    $('#rBody').innerHTML = h + '<div class="muted" style="padding:8px 10px;font-size:.8em">갱신: ' + esc(rk.updatedAt || '') + ' · 던전별 개인 최고 점수 기준, 종합 = 던전별 최고 점수의 합</div>';
+  }).catch(function (e) { if ($('#rBody')) $('#rBody').innerHTML = '<div class="down" style="padding:20px">랭킹을 불러오지 못했습니다: ' + esc(e.message) + '</div>'; });
+  function onKey(e) {
+    if (e.code === 'ArrowRight') showRanking((tabIdx + 1) % tabs.length);
+    else if (e.code === 'ArrowLeft') showRanking((tabIdx + tabs.length - 1) % tabs.length);
+    else if (e.code === 'Space') { rankingCache = null; showRanking(tabIdx); }
+    else if (e.code === 'Escape' || e.code === 'KeyR') showTown();
+  }
+}
+
+/* ---- 조작법 ---- */
+function helpHtml() {
+  const k = function (s) { return s.split(' ').map(function (x) { return '<span class="key">' + x + '</span>'; }).join(' '); };
+  const sk = classSkills().map(function (s) { return '<span class="key">' + esc(s.key) + '</span>' + esc(s.emoji); }).join(' ');
+  return '<div class="keys-help">' +
+    '<div>' + k('← → ↑ ↓') + '</div><div>이동 (같은 방향 두 번 누르면 대시)</div>' +
+    '<div>' + k('X') + '</div><div>기본 공격 (연타 시 3연격, 공중에서 누르면 점프 공격)</div>' +
+    '<div>' + k('C') + '</div><div>점프</div>' +
+    '<div>' + k('Z') + '</div><div>백스텝 (잠깐 무적)</div>' +
+    '<div>' + sk + '</div><div>스킬 (레벨이 오르면 해금, 기본 공격 중에도 캔슬 가능)</div>' +
+    '<div>' + k('1 2') + '</div><div>HP / MP 포션</div>' +
+    '<div>' + k('Esc') + '</div><div>일시정지 / 뒤로</div>' +
+    '</div><p class="muted" style="font-size:.85em">몬스터 머리 위에 <b style="color:#ff5555">!</b>가 뜨면 곧 공격합니다. 빨간 장판은 피하세요.<br>빨리, 덜 맞고, 콤보를 길게 이을수록 클리어 등급이 올라갑니다.</p>';
+}
+function showHelp() {
+  setScreen('help', '<div class="screen"><div class="panel result"><h2 class="gold" style="margin-top:0">❔ 조작법</h2>' + helpHtml() + '<div class="muted">Esc 또는 Enter로 돌아가기</div></div></div>', function (e) {
+    if (e.code === 'Escape' || e.code === 'Enter' || e.code === 'KeyH') showTown();
+  });
+}
+
+/* ============ 6. 던전 전투 엔진 ============ */
+function makePlayer() {
+  const st = calcStats(), c = classOf();
+  return {
+    x: 110, y: 410, z: 0, vz: 0, vx: 0, facing: 1, size: 64, emoji: c.emoji, emojiFacing: c.emojiFacing || 'L',
+    st: st, hp: st.maxHp, mp: st.maxMp, action: null, atkStep: 0, comboWin: 0, invul: 0, cds: {}, buffAtk: 0, buffT: 0,
+    dash: false, lastTap: {}, backCd: 0, potCd: 0, flash: 0, hurt: 0, swing: null, nameTag: S.name, msgCd: 0,
+  };
+}
+
+function makeMob(data, x, y) {
+  const boss = String(data.isBoss).toUpperCase() === 'Y';
+  return {
+    data: data, boss: boss, x: x, y: y, z: 0, vz: 0, vx: 0, facing: -1, size: num(data.size, 48), emoji: data.emoji, emojiFacing: data.emojiFacing || 'L',
+    hp: num(data.hp, 100), maxHp: num(data.hp, 100), atk: num(data.atk, 10), defense: num(data.def), speed: num(data.speed, 80), range: num(data.range, 60),
+    ai: boss ? 'boss' : (data.ai || 'melee'), cd: rnd(0.8, 1.8), aggro: rnd(0.3, 0.9), action: null, windup: 0, hitstun: 0, flash: 0, hurt: 0,
+    dead: false, deathT: 0, alpha: 1, rot: 0, enraged: false,
+  };
+}
+
+function startDungeon(d) {
+  RUN = {
+    d: d, tier: num(d.tier, 1), rooms: Math.max(2, num(d.rooms, 4)), roomIdx: 0,
+    mobIds: String(d.monsters).split(',').map(function (s) { return s.trim(); }).filter(function (id) { return IDX.monsters[id]; }),
+    time: 0, hits: 0, combo: 0, comboT: 0, maxCombo: 0, kills: 0, expGained: 0, goldGained: 0, itemsGot: [],
+    mobs: [], projs: [], fx: [], drops: [], shake: 0, hitStop: 0, state: 'play', stateT: 0, roomCleared: false, isBoss: false,
+    player: makePlayer(), fade: 0, submitted: false, result: null, startLevel: P.level,
+  };
+  if (!RUN.mobIds.length) RUN.mobIds = [DATA.monsters[0].id];
+  enterRoom(0);
+  setScreen('game', '');
+  window.focus();
+}
+
+function enterRoom(i) {
+  const R = RUN, p = R.player;
+  R.roomIdx = i; R.mobs = []; R.projs = []; R.drops = []; R.roomCleared = false;
+  R.fx = R.fx.filter(function (f) { return f.type === 'banner'; });
+  p.x = 110; p.y = 410; p.z = 0; p.vz = 0; p.vx = 0; p.facing = 1; p.action = null;
+  R.isBoss = i === R.rooms - 1;
+  if (R.isBoss) {
+    const b = IDX.monsters[R.d.bossId] || DATA.monsters[0];
+    R.mobs.push(makeMob(b, ROOM_W - 320, 410));
+    for (let k = 0; k < Math.min(2, R.tier); k++) R.mobs.push(makeMob(IDX.monsters[pick(R.mobIds)], ROOM_W - 520 - k * 90, 340 + k * 130));
+    banner('WARNING', b.name + ' 등장!', '#ff5555', 2.2);
+  } else {
+    const n = num(R.d.mobsPerRoom, 3) + Math.floor(i / 2);
+    for (let k = 0; k < n; k++) R.mobs.push(makeMob(IDX.monsters[pick(R.mobIds)], rnd(560, ROOM_W - 140), rnd(FLOOR_TOP + 25, FLOOR_BOTTOM - 10)));
+    if (i === 0) banner(R.d.name, '단계 ' + R.tier + ' · 방 ' + R.rooms + '개', '#ffcc4d', 2.0);
+  }
+}
+
+/* --- 효과 --- */
+function fx(o) { o.t = 0; o.z = o.z || 0; RUN.fx.push(o); return o; }
+function fxText(x, y, z, text, color, size) { fx({ type: 'text', x: x, y: y, z: z, text: text, color: color, size: size, life: 0.9 }); }
+function banner(text, sub, color, life) { fx({ type: 'banner', x: 0, y: 200, text: text, sub: sub, color: color, life: life || 1.6 }); }
+
+/* --- 플레이어 --- */
+function updatePlayer(dt) {
+  const R = RUN, p = R.player, st = p.st;
+  p.invul -= dt; p.flash -= dt; p.hurt -= dt; p.backCd -= dt; p.potCd -= dt; p.comboWin -= dt; p.msgCd -= dt;
+  Object.keys(p.cds).forEach(function (k) { p.cds[k] -= dt; });
+  if (p.buffT > 0) { p.buffT -= dt; if (p.buffT <= 0) { p.buffAtk = 0; fxText(p.x, p.y, 40, '광폭화 종료', '#aaa', 16); } }
+  p.mp = Math.min(st.maxMp, p.mp + st.maxMp * 0.015 * dt);   // MP 자연 회복 1.5%/초
+
+  if (pressed('Digit1')) usePotion('hp');
+  if (pressed('Digit2')) usePotion('mp');
+
+  // 스킬: 아무 행동도 없거나, 기본 공격이 맞은 뒤라면 캔슬해서 사용 가능
+  if (!p.action || (p.action.type === 'atk' && p.action.hit)) {
+    const list = classSkills();
+    for (let i = 0; i < list.length; i++) {
+      if (pressed('Key' + String(list[i].key).toUpperCase()) && trySkill(list[i])) break;
+    }
+  }
+  if (p.action) runAction(p, dt);
+  if (!p.action) {
+    if (pressed('KeyX')) startAttack();
+    else if (pressed('KeyZ') && p.backCd <= 0 && p.z === 0) { p.action = { type: 'back', t: 0, dur: 0.28 }; p.vx = -p.facing * 760; p.invul = Math.max(p.invul, 0.32); p.backCd = 0.7; }
+    else if (pressed('KeyC') && p.z === 0) p.vz = 600;
+  }
+
+  // 이동
+  const canMove = !p.action || p.action.move;
+  let dx = 0, dy = 0;
+  if (canMove) {
+    if (held('ArrowLeft')) dx -= 1;
+    if (held('ArrowRight')) dx += 1;
+    if (held('ArrowUp')) dy -= 1;
+    if (held('ArrowDown')) dy += 1;
+  }
+  if (dx !== 0 && !p.action) p.facing = dx;
+  if (dx === 0) p.dash = false;
+  const spd = st.speed * (p.dash ? 1.75 : 1) * (p.action && p.action.move ? 0.5 : 1);
+  p.x += dx * spd * dt;
+  p.y += dy * spd * 0.55 * dt;
+  p.x += p.vx * dt; p.vx *= Math.pow(0.0005, dt);
+  if (p.z > 0 || p.vz !== 0) { p.z += p.vz * dt; p.vz -= GRAVITY * dt; if (p.z <= 0) { p.z = 0; p.vz = 0; } }
+  p.x = clamp(p.x, 30, ROOM_W - 30);
+  p.y = clamp(p.y, FLOOR_TOP + 10, FLOOR_BOTTOM);
+  p.swing = p.action && (p.action.type === 'atk' || p.action.type === 'jatk' || p.action.type === 'skill') ? clamp(p.action.t / p.action.dur, 0, 1) : null;
+}
+
+function startAttack() {
+  const p = RUN.player;
+  if (p.z > 0) { p.action = { type: 'jatk', t: 0, dur: 0.34, hitAt: 0.08, move: true }; return; }
+  const step = p.comboWin > 0 ? (p.atkStep + 1) % 3 : 0;
+  p.atkStep = step;
+  p.action = { type: 'atk', t: 0, step: step, dur: [0.25, 0.25, 0.36][step], hitAt: [0.07, 0.07, 0.13][step], mult: [1.0, 1.1, 1.5][step], kb: [70, 70, 260][step] };
+}
+
+function runAction(p, dt) {
+  const a = p.action, R = RUN;
+  a.t += dt;
+  if (a.type === 'atk') {
+    if (!a.hit && a.t >= a.hitAt) {
+      a.hit = true;
+      hitMobs(p, { rangeX: 95, rangeY: 38, mult: a.mult, kb: a.kb, hitstun: a.step === 2 ? 0.5 : 0.35, heavy: a.step === 2 });
+      fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z, facing: p.facing, r: 58, life: 0.18, color: a.step === 2 ? '#ffe08a' : '#ffffff' });
+    }
+    if (a.hit && pressed('KeyX')) a.queued = true;
+  } else if (a.type === 'jatk') {
+    if (!a.hit && a.t >= a.hitAt) {
+      a.hit = true;
+      hitMobs(p, { rangeX: 90, rangeY: 42, mult: 1.2, kb: 90, hitstun: 0.4, zMax: p.z + 90 });
+      fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z, facing: p.facing, r: 52, life: 0.18 });
+    }
+  } else if (a.type === 'skill') {
+    runSkill(p, a, dt);
+  }
+  if (a.t >= a.dur) {
+    p.action = null;
+    if (a.type === 'atk') { p.comboWin = 0.35; if (a.queued) startAttack(); }
+  }
+}
+
+function usePotion(kind) {
+  const p = RUN.player;
+  if (p.potCd > 0) return;
+  const ids = DATA.items.filter(function (it) { return it.type === 'potion' && num(kind === 'hp' ? it.healHp : it.healMp) > 0 && invCount(it.id) > 0; })
+    .sort(function (a, b) { return num(kind === 'hp' ? a.healHp : a.healMp) - num(kind === 'hp' ? b.healHp : b.healMp); });
+  if (!ids.length) { if (p.msgCd <= 0) { fxText(p.x, p.y, p.z, (kind === 'hp' ? 'HP' : 'MP') + ' 포션 없음', '#aaa', 16); p.msgCd = 0.6; } return; }
+  const missing = kind === 'hp' ? 1 - p.hp / p.st.maxHp : 1 - p.mp / p.st.maxMp;
+  if (missing <= 0.001) return;
+  const it = missing > 0.5 ? ids[ids.length - 1] : ids[0];   // 많이 비었으면 큰 포션부터
+  invUse(it.id); markDirty();
+  if (kind === 'hp') { const v = Math.round(p.st.maxHp * num(it.healHp) / 100); p.hp = Math.min(p.st.maxHp, p.hp + v); fxText(p.x, p.y, p.z, '+' + v, '#6dff8a', 20); }
+  else { const v2 = Math.round(p.st.maxMp * num(it.healMp) / 100); p.mp = Math.min(p.st.maxMp, p.mp + v2); fxText(p.x, p.y, p.z, '+' + v2 + ' MP', '#7fb2ff', 20); }
+  fx({ type: 'ring', x: p.x, y: p.y, r0: 20, r1: 60, life: 0.4, color: kind === 'hp' ? '#6dff8a' : '#7fb2ff' });
+  p.potCd = 0.8;
+}
+
+/* --- 스킬 --- */
+function trySkill(sk) {
+  const p = RUN.player;
+  if (P.level < num(sk.reqLevel)) return false;
+  if ((p.cds[sk.id] || 0) > 0) return false;
+  if (p.mp < num(sk.mp)) { if (p.msgCd <= 0) { fxText(p.x, p.y, p.z, 'MP 부족', '#7fb2ff', 16); p.msgCd = 0.6; } return false; }
+  if (p.z > 0 && sk.type !== 'buff') return false;
+  const dur = { upper: 0.32, dash: num(sk.duration, 0.25) + 0.12, spin: num(sk.duration, 1), wave: 0.3, buff: 0.4, slam: 0.5, ultimate: num(sk.duration, 1.5) + 0.2 }[sk.type] || 0.4;
+  p.mp -= num(sk.mp);
+  p.cds[sk.id] = num(sk.cooldown);
+  p.action = { type: 'skill', sk: sk, t: 0, dur: dur, n: 0, once: new Set(), move: sk.type === 'spin' };
+  fxText(p.x, p.y, p.z + 30, sk.name + '!', '#ffe08a', 18);
+  if (sk.type === 'ultimate') { banner(sk.name, '', '#b0e0ff', 1.2); p.invul = dur + 0.3; RUN.shake = 8; }
+  return true;
+}
+
+function runSkill(p, a, dt) {
+  const sk = a.sk, mult = num(sk.dmgPct) / 100, rx = num(sk.rangeX, 100), ry = num(sk.rangeY, 40), pow = num(sk.power), dur = num(sk.duration);
+  switch (sk.type) {
+    case 'upper':
+      if (!a.hit && a.t >= 0.1) {
+        a.hit = true;
+        hitMobs(p, { rangeX: rx, rangeY: ry, mult: mult, launch: pow, hitstun: 0.9, kb: 40 });
+        fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z + 20, facing: p.facing, r: 66, life: 0.25, color: '#8fe3ff' });
+      }
+      break;
+    case 'dash':
+      if (a.t < dur) {
+        p.x += p.facing * (pow / dur) * dt;
+        p.invul = Math.max(p.invul, 0.1);
+        hitMobs(p, { rangeX: rx, back: 40, rangeY: ry, mult: mult, kb: 180, hitstun: 0.5, once: a.once });
+        if (Math.random() < 0.6) fx({ type: 'spark', x: p.x - p.facing * 30, y: p.y, z: 10, emoji: '💨', life: 0.25 });
+      }
+      break;
+    case 'spin': {
+      const hits = Math.max(1, num(sk.hits, 1)), iv = dur / hits;
+      while (a.n < hits && a.t >= a.n * iv) {
+        a.n++;
+        hitMobs(p, { center: true, rangeX: rx, rangeY: ry, mult: mult, kb: 25, hitstun: 0.3, dirFrom: p.x });
+        fx({ type: 'ring', x: p.x, y: p.y, r0: rx * 0.5, r1: rx, life: 0.2, color: '#e0f0ff' });
+      }
+      p.facing = Math.floor(a.t * 16) % 2 ? 1 : -1;
+      break;
+    }
+    case 'wave':
+      if (!a.hit && a.t >= 0.1) {
+        a.hit = true;
+        RUN.projs.push({ owner: 'p', x: p.x + p.facing * 40, y: p.y, z: 36, vx: p.facing * (pow || 600), range: rx, travelled: 0, emoji: sk.emoji || '🌙', size: 60, mult: mult, rangeY: ry, once: new Set() });
+      }
+      break;
+    case 'buff':
+      if (!a.hit && a.t >= 0.1) {
+        a.hit = true; p.buffAtk = pow; p.buffT = dur || 10;
+        fx({ type: 'ring', x: p.x, y: p.y, r0: 20, r1: 90, life: 0.5, color: '#ff6b3b' });
+        fxText(p.x, p.y, p.z + 10, '공격력 +' + pow + '%', '#ff9b6b', 20);
+      }
+      break;
+    case 'slam':
+      if (!a.hit && a.t >= 0.3) {
+        a.hit = true;
+        hitMobs(p, { rangeX: rx, rangeY: ry, mult: mult, kb: pow, hitstun: 0.7, launch: 260, heavy: true });
+        RUN.shake = 14;
+        fx({ type: 'ring', x: p.x + p.facing * rx * 0.5, y: p.y, r0: 20, r1: rx * 0.7, life: 0.35, color: '#ffb35c' });
+        fx({ type: 'spark', x: p.x + p.facing * rx * 0.5, y: p.y, z: 0, emoji: '💥', life: 0.35 });
+      }
+      break;
+    case 'ultimate': {
+      const hits2 = Math.max(1, num(sk.hits, 1)), iv2 = dur / hits2;
+      while (a.n < hits2 && a.t >= a.n * iv2) {
+        a.n++;
+        hitMobs(p, { all: true, mult: mult, kb: 15, hitstun: 0.4 });
+        RUN.mobs.forEach(function (m) { if (!m.dead) fx({ type: 'slash', x: m.x + rnd(-20, 20), y: m.y, z: m.z, facing: Math.random() < 0.5 ? 1 : -1, r: 50, life: 0.15, color: '#b0e0ff' }); });
+        RUN.shake = 6;
+      }
+      break;
+    }
+  }
+}
+
+/* --- 타격 판정 --- */
+function hitMobs(p, o) {
+  let n = 0;
+  RUN.mobs.forEach(function (m) {
+    if (m.dead) return;
+    let ok;
+    if (o.all) ok = true;
+    else if (o.center) ok = Math.abs(m.x - p.x) <= o.rangeX + m.size * 0.3 && Math.abs(m.y - p.y) <= o.rangeY;
+    else {
+      const dx = (m.x - p.x) * p.facing;
+      ok = dx >= -(o.back || 15) && dx <= o.rangeX + m.size * 0.35 && Math.abs(m.y - p.y) <= o.rangeY + 6;
+    }
+    if (ok && m.z > (o.zMax != null ? o.zMax : 150)) ok = false;
+    if (ok && o.once) { if (o.once.has(m)) ok = false; else o.once.add(m); }
+    if (ok) { damageMob(m, o.mult, o); n++; }
+  });
+  return n;
+}
+
+function damageMob(m, mult, o) {
+  const R = RUN, p = R.player;
+  const atk = p.st.atk * (1 + p.buffAtk / 100);
+  let dmg = Math.max(1, (atk * mult - m.defense * 0.5) * rnd(0.9, 1.1));
+  const crit = Math.random() * 100 < p.st.crit;
+  if (crit) dmg *= 1.5;
+  dmg = Math.round(dmg);
+  m.hp -= dmg; m.flash = 0.08; m.hurt = 0.15;
+  R.combo++; R.comboT = 1.6; R.maxCombo = Math.max(R.maxCombo, R.combo);
+  fxText(m.x + rnd(-10, 10), m.y, m.z + m.size * 0.6, (crit ? '💥' : '') + fmt(dmg), crit ? '#ffd23f' : '#ffffff', crit ? 28 : 22);
+  const dir = o.dirFrom != null ? (Math.sign(m.x - o.dirFrom) || p.facing) : p.facing;
+  if (!m.boss) {
+    m.hitstun = Math.max(m.hitstun, o.hitstun || 0.35);
+    m.windup = 0; m.action = null;
+    m.vx = dir * (o.kb || 60);
+    if (o.launch) { m.vz = o.launch; m.z = Math.max(m.z, 1); }
+    else if (m.z > 0) m.vz = Math.max(m.vz, 240);       // 공중 콤보: 맞으면 조금 더 뜬다
+  } else {
+    m.vx = dir * (o.kb || 60) * 0.12;                   // 보스는 슈퍼아머
+  }
+  if (crit || o.heavy) R.hitStop = 0.05;
+  if (m.hp <= 0) killMob(m);
+}
+
+function killMob(m) {
+  const R = RUN, p = R.player;
+  m.dead = true; m.hp = 0; m.deathT = 0.8; m.vz = 320; m.z = Math.max(1, m.z); m.windup = 0; m.action = null;
+  R.kills++;
+  const exp = Math.round(num(m.data.exp) * num(CFG.EXP_RATE, 1));
+  const gold = Math.round(num(m.data.gold) * num(CFG.GOLD_RATE, 1) * rnd(0.8, 1.2));
+  R.expGained += exp; R.goldGained += gold; P.gold += gold;
+  const ups = gainExp(exp);
+  fxText(m.x, m.y, m.z + m.size, '+' + exp + ' EXP', '#9ff0c3', 15);
+  fxText(m.x + 30, m.y, m.z + m.size - 20, '+' + gold + 'G', '#ffcc4d', 15);
+  if (ups > 0) onLevelUp(ups);
+  rollDrops(m);
+  markDirty();
+  if (m.boss) { R.shake = 16; R.hitStop = 0.25; }
+}
+
+function rollDrops(m) {
+  const R = RUN, mul = num(CFG.DROP_RATE, 1) * (m.boss ? num(CFG.BOSS_DROP_MUL, 6) : 1);
+  const pool = DATA.items.filter(function (it) { return it.dropDungeon === R.d.id && num(it.dropRate) > 0; });
+  let gotEquip = false;
+  pool.forEach(function (it) {
+    if (Math.random() * 100 < num(it.dropRate) * mul) { spawnDrop(it, m); if (it.type !== 'potion') gotEquip = true; }
+  });
+  if (m.boss && !gotEquip) {   // 보스는 장비 하나는 꼭 준다
+    const eq = pool.filter(function (it) { return it.type !== 'potion'; });
+    if (eq.length) spawnDrop(pick(eq), m);
+  }
+}
+function spawnDrop(it, m) {
+  RUN.drops.push({ id: it.id, emoji: it.emoji, color: it.grade !== '일반' ? GRADE_COLOR[it.grade] : '', x: clamp(m.x + rnd(-40, 40), 40, ROOM_W - 40), y: clamp(m.y + rnd(-15, 15), FLOOR_TOP + 10, FLOOR_BOTTOM), z: 40, vz: 280, t: 0, warned: 0 });
+}
+
+function onLevelUp(ups) {
+  const p = RUN.player;
+  p.st = calcStats(); p.hp = p.st.maxHp; p.mp = p.st.maxMp;
+  banner('LEVEL UP!', 'Lv ' + P.level + (ups > 1 ? ' (+' + ups + ')' : ''), '#7ee787', 1.8);
+  fx({ type: 'ring', x: p.x, y: p.y, r0: 20, r1: 120, life: 0.7, color: '#7ee787' });
+  classSkills().forEach(function (s) {
+    if (num(s.reqLevel) > P.level - ups && num(s.reqLevel) <= P.level) toast('✨ 새 스킬 습득: ' + esc(s.emoji) + ' <b>' + esc(s.name) + '</b> (' + esc(s.key) + ')', 3500);
+  });
+}
+
+function hurtPlayer(m, mult) {
+  const R = RUN, p = R.player;
+  if (p.invul > 0 || R.state !== 'play') return;
+  let dmg = Math.max(1, Math.round((m.atk * (mult || 1) - p.st.def * 0.5) * rnd(0.9, 1.1)));
+  p.hp -= dmg; R.hits++;
+  p.invul = 0.6; p.flash = 0.1; p.hurt = 0.2;
+  p.vx = (Math.sign(p.x - m.x) || 1) * 220;
+  if (p.action && p.action.type !== 'skill') p.action = null;   // 기본 공격은 끊기고, 스킬은 유지(슈퍼아머)
+  fxText(p.x, p.y, p.z + 40, '-' + fmt(dmg), '#ff5a5a', 24);
+  R.shake = Math.max(R.shake, 5);
+  if (p.hp <= 0) { p.hp = 0; onPlayerDead(); }
+}
+
+/* --- 몬스터 AI --- */
+function approach(m, tx, ty, dt, mul) {
+  const dx = tx - m.x, dy = ty - m.y, sp = m.speed * (mul || 1) * (m.enraged ? 1.25 : 1);
+  if (Math.abs(dx) > 6) m.x += Math.sign(dx) * Math.min(Math.abs(dx), sp * dt);
+  if (Math.abs(dy) > 4) m.y += Math.sign(dy) * Math.min(Math.abs(dy), sp * 0.6 * dt);
+}
+
+function updateMob(m, dt) {
+  const R = RUN, p = R.player;
+  m.flash -= dt; m.hurt -= dt;
+  if (m.z > 0 || m.vz !== 0) { m.z += m.vz * dt; m.vz -= GRAVITY * dt; if (m.z <= 0) { m.z = 0; m.vz = 0; } }
+  m.x += m.vx * dt; m.vx *= Math.pow(0.002, dt);
+  m.x = clamp(m.x, 30, ROOM_W - 30); m.y = clamp(m.y, FLOOR_TOP + 10, FLOOR_BOTTOM);
+  if (m.dead) { m.deathT -= dt; m.alpha = clamp(m.deathT / 0.8, 0, 1); m.rot += dt * 5 * (m.vx >= 0 ? 1 : -1); return; }
+  if (m.hitstun > 0) { m.hitstun -= dt; return; }
+  if (m.z > 0 && !m.boss) return;
+  m.cd -= dt; m.aggro -= dt;
+  if (m.aggro > 0) return;
+  if (m.boss && !m.enraged && m.hp < m.maxHp * 0.4) { m.enraged = true; banner('분노!', m.data.name + '이(가) 격노했다', '#ff5555', 1.6); }
+  if (m.action) { runMobAction(m, dt); return; }
+
+  const dx = p.x - m.x, dy = p.y - m.y, side = Math.sign(-dx) || 1;
+  m.facing = dx >= 0 ? 1 : -1;
+  const cdMul = m.enraged ? 0.7 : 1;
+  switch (m.ai) {
+    case 'charger':
+      if (Math.abs(dy) < 30 && Math.abs(dx) < 340 && m.cd <= 0) m.action = { type: 'charge', t: 0, wind: 0.45, dur: 1.0, speed: 430, mult: 1 };
+      else approach(m, p.x + side * 220, p.y, dt);
+      break;
+    case 'ranged':
+      if (Math.abs(dy) < 24 && Math.abs(dx) <= m.range && m.cd <= 0) m.action = { type: 'shoot', t: 0, wind: 0.5, dur: 0.8, mult: 1 };
+      else approach(m, p.x + side * m.range * 0.75, p.y, dt);
+      break;
+    case 'boss':
+      if (m.cd <= 0) {
+        const opts = [];
+        if (Math.abs(dx) < m.range + 30 && Math.abs(dy) < 34) opts.push('melee', 'melee', 'melee');
+        opts.push('slam', 'slam');
+        if (Math.abs(dy) < 50) opts.push('charge', 'charge');
+        if (m.data.projectile && Math.abs(dx) > 200) opts.push('barrage', 'barrage');
+        const k = pick(opts);
+        if (k === 'melee') m.action = { type: 'melee', t: 0, wind: 0.5, dur: 0.85, mult: 1 };
+        else if (k === 'slam') { m.action = { type: 'slam', t: 0, wind: 0.95, dur: 1.3, mult: 1.5, tx: p.x, ty: p.y, r: 115 }; fx({ type: 'tele', x: p.x, y: p.y, r: 115, life: 0.95 }); }
+        else if (k === 'charge') m.action = { type: 'charge', t: 0, wind: 0.65, dur: 1.4, speed: 560, mult: 1.2 };
+        else m.action = { type: 'shoot', t: 0, wind: 0.6, dur: 1.0, mult: 0.8, barrage: true };
+      } else approach(m, p.x + side * m.range * 0.8, p.y, dt);
+      break;
+    default: // melee
+      if (Math.abs(dx) <= m.range + 12 && Math.abs(dy) <= 22 && m.cd <= 0) m.action = { type: 'melee', t: 0, wind: 0.45, dur: 0.75, mult: 1 };
+      else approach(m, p.x + side * m.range * 0.7, p.y, dt);
+  }
+  if (m.action) m.cdBase = num(m.data.attackCd, 1.5) * cdMul;
+}
+
+function runMobAction(m, dt) {
+  const a = m.action, p = RUN.player;
+  a.t += dt;
+  m.windup = a.t < a.wind ? 1 : 0;
+  if (a.type === 'melee') {
+    if (!a.hit && a.t >= a.wind) {
+      a.hit = true;
+      const dx = (p.x - m.x) * m.facing;
+      if (dx >= -10 && dx <= m.range + 20 && Math.abs(p.y - m.y) <= 30 && p.z < 50) hurtPlayer(m, a.mult);
+      fx({ type: 'slash', x: m.x + m.facing * m.size * 0.3, y: m.y, z: 0, facing: m.facing, r: m.size * 0.6, life: 0.2, color: '#ff6b6b' });
+    }
+  } else if (a.type === 'charge') {
+    if (a.t >= a.wind && a.t < a.wind + 0.55) {
+      m.x += m.facing * a.speed * dt;
+      if (!a.hit && Math.abs(p.x - m.x) < m.size * 0.5 + 22 && Math.abs(p.y - m.y) < 30 && p.z < 50) { a.hit = true; hurtPlayer(m, a.mult); }
+      if (Math.random() < 0.4) fx({ type: 'spark', x: m.x - m.facing * 20, y: m.y, z: 5, emoji: '💨', life: 0.25 });
+    }
+  } else if (a.type === 'shoot') {
+    if (!a.hit && a.t >= a.wind) {
+      a.hit = true;
+      const offs = a.barrage ? [-60, 0, 60] : [0];
+      offs.forEach(function (oy) {
+        RUN.projs.push({ owner: 'm', src: m, x: m.x + m.facing * 24, y: clamp(m.y + oy, FLOOR_TOP + 10, FLOOR_BOTTOM), z: 36, vx: m.facing * 330, range: m.range + 160, travelled: 0, emoji: m.data.projectile || '⚫', size: 30, mult: a.mult, spin: true });
+      });
+    }
+  } else if (a.type === 'slam') {
+    if (a.t < a.wind * 0.6) approach(m, a.tx, a.ty, dt, 0.5);
+    if (!a.hit && a.t >= a.wind) {
+      a.hit = true;
+      const ex = (p.x - a.tx) / a.r, ey = (p.y - a.ty) / (a.r * 0.35);
+      if (ex * ex + ey * ey <= 1 && p.z < 60) hurtPlayer(m, a.mult);
+      RUN.shake = 12;
+      fx({ type: 'ring', x: a.tx, y: a.ty, r0: 30, r1: a.r * 1.1, life: 0.35, color: '#ff8a5c' });
+      fx({ type: 'spark', x: a.tx, y: a.ty, z: 0, emoji: '💥', life: 0.35 });
+    }
+  }
+  if (a.t >= a.dur) { m.action = null; m.windup = 0; m.cd = m.cdBase || 1.5; }
+}
+
+function separateMobs() {
+  const ms = RUN.mobs;
+  for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) {
+    const a = ms[i], b = ms[j];
+    if (a.dead || b.dead || a.z > 0 || b.z > 0) continue;
+    const dx = b.x - a.x, dy = (b.y - a.y) * 2, d = Math.hypot(dx, dy), min = (a.size + b.size) * 0.33;
+    if (d < min && d > 0.01) {
+      const push = (min - d) / 2, nx = dx / d, ny = dy / d;
+      if (!a.boss) { a.x -= nx * push; a.y -= ny * push * 0.5; }
+      if (!b.boss) { b.x += nx * push; b.y += ny * push * 0.5; }
+    }
+  }
+}
+
+function updateProjs(dt) {
+  const R = RUN, p = R.player;
+  R.projs = R.projs.filter(function (pr) {
+    const step = pr.vx * dt;
+    pr.x += step; pr.travelled += Math.abs(step);
+    if (pr.owner === 'p') {
+      R.mobs.forEach(function (m) {
+        if (m.dead || pr.once.has(m)) return;
+        if (Math.abs(m.x - pr.x) <= m.size * 0.5 + 24 && Math.abs(m.y - pr.y) <= pr.rangeY && m.z < 160) {
+          pr.once.add(m); damageMob(m, pr.mult, { kb: 90, hitstun: 0.4, dirFrom: pr.x - pr.vx });
+        }
+      });
+    } else if (Math.abs(p.x - pr.x) < 28 && Math.abs(p.y - pr.y) < 26 && p.z < 60 && p.invul <= 0) {
+      hurtPlayer(pr.src, pr.mult); return false;
+    }
+    return pr.travelled < pr.range && pr.x > 0 && pr.x < ROOM_W;
+  });
+}
+
+function pickupDrop(d, silent) {
+  const it = IDX.items[d.id];
+  if (!invAdd(d.id, 1)) return false;
+  RUN.itemsGot.push(d.id); markDirty();
+  if (!silent) fxText(d.x, d.y, 20, it.emoji + ' ' + it.name, GRADE_COLOR[it.grade] || '#fff', 17);
+  return true;
+}
+
+function updateDrops(dt) {
+  const R = RUN, p = R.player;
+  R.drops = R.drops.filter(function (d) {
+    d.t += dt; d.warned -= dt;
+    if (d.z > 0 || d.vz !== 0) { d.z += d.vz * dt; d.vz -= GRAVITY * dt; if (d.z <= 0) { d.z = 0; d.vz = 0; } }
+    if (d.t > 0.5 && Math.abs(p.x - d.x) < 42 && Math.abs(p.y - d.y) < 30 && p.z < 40) {
+      if (pickupDrop(d)) return false;
+      if (d.warned <= 0) { fxText(p.x, p.y, 40, '인벤토리가 가득 찼습니다', '#ff9b9b', 16); d.warned = 2; }
+    }
+    return true;
+  });
+}
+function collectAllDrops() {
+  if (!RUN) return;
+  let lost = 0;
+  RUN.drops.forEach(function (d) { if (!pickupDrop(d, true)) lost++; });
+  RUN.drops = [];
+  if (lost) toast('인벤토리가 가득 차서 아이템 ' + lost + '개를 두고 왔습니다.');
+}
+
+function updateFx(dt) {
+  RUN.fx = RUN.fx.filter(function (e) { e.t += dt; return e.t < e.life; });
+}
+
+/** 한 프레임 진행 */
+function updateRun(dt) {
+  const R = RUN, p = R.player;
+  if (R.state === 'fade') {
+    R.stateT += dt;
+    if (R.stateT >= 0.25 && !R.swapped) { R.swapped = true; enterRoom(R.roomIdx + 1); }
+    if (R.stateT >= 0.5) { R.state = 'play'; R.swapped = false; }
+    updateFx(dt); return;
+  }
+  if (R.state === 'clear') {
+    R.stateT += dt;
+    R.mobs.forEach(function (m) { updateMob(m, dt); });
+    updateDrops(dt); updateFx(dt);
+    if (R.stateT > 1.2 && screen === 'game') { collectAllDrops(); showResult(); }
+    return;
+  }
+  if (R.state !== 'play') { updateFx(dt); return; }
+  if (R.hitStop > 0) { R.hitStop -= dt; updateFx(dt * 0.3); return; }
+
+  R.time += dt;
+  updatePlayer(dt);
+  R.mobs.forEach(function (m) { updateMob(m, dt); });
+  separateMobs();
+  updateProjs(dt);
+  updateDrops(dt);
+  updateFx(dt);
+  R.mobs = R.mobs.filter(function (m) { return !m.dead || m.deathT > 0; });
+  if (R.comboT > 0) { R.comboT -= dt; if (R.comboT <= 0) R.combo = 0; }
+  R.shake = Math.max(0, R.shake - dt * 40);
+
+  if (!R.roomCleared && R.mobs.every(function (m) { return m.dead; })) {
+    R.roomCleared = true;
+    if (R.isBoss) onDungeonClear();
+    else fxText(p.x, p.y, 60, '방 클리어! 오른쪽 문으로 →', '#ffe08a', 20);
+  }
+  if (R.state === 'play' && R.roomCleared && !R.isBoss && p.x >= ROOM_W - 60) {
+    collectAllDrops();
+    R.state = 'fade'; R.stateT = 0;
+  }
+}
+
+function onDungeonClear() {
+  const R = RUN, d = R.d;
+  R.state = 'clear'; R.stateT = 0;
+  const res = calcClearResult(d, R.time, R.hits, R.maxCombo, CFG);
+  const bonusExp = Math.round(num(d.clearExp) * (GRADE_EXP_MUL[res.grade] || 1) * num(CFG.EXP_RATE, 1));
+  const bonusGold = Math.round(num(d.clearGold) * num(CFG.GOLD_RATE, 1));
+  const lvBefore = P.level;
+  const ups = gainExp(bonusExp);
+  P.gold += bonusGold;
+  const idx = DATA.dungeons.findIndex(function (x) { return x.id === d.id; });
+  P.cleared = Math.max(P.cleared, idx + 1);
+  const old = P.bestGrades[d.id];
+  const newBest = !old || GRADE_RANK.indexOf(res.grade) > GRADE_RANK.indexOf(old);
+  if (newBest) P.bestGrades[d.id] = res.grade;
+  markDirty();
+  R.result = { grade: res.grade, score: res.score, bonusExp: bonusExp, bonusGold: bonusGold, lvBefore: lvBefore, levelUps: ups, newBest: newBest, time: R.time };
+  if (ups > 0) { R.player.st = calcStats(); }
+  banner('DUNGEON CLEAR!', '', '#ffcc4d', 1.5);
+}
+
+function onPlayerDead() {
+  RUN.state = 'dead';
+  setTimeout(showDead, 700);
+}
+
+/* ============ 7. 결과 / 사망 / 일시정지 ============ */
+function showPause() {
+  RUN.state = 'pause';
+  setScreen('pause', '<div class="dim"></div><div class="screen"><div class="panel result"><h2 class="gold" style="margin-top:0">⏸ 일시정지</h2><ul class="menu" id="pMenu"></ul><hr style="border-color:#3a3350">' + helpHtml() + '</div></div>', onKey);
+  const opts = [
+    { html: '<span class="grow">▶ 계속하기</span><span class="key">Esc</span>', fn: resume },
+    { html: '<span class="grow">🏘️ 마을로 돌아가기</span><span class="sub">클리어 기록 없음 · 얻은 경험치/아이템 유지</span>', fn: leave },
+  ];
+  const list = makeList($('#pMenu'), opts, { onSelect: function (i) { opts[i].fn(); } });
+  function resume() { RUN.state = 'play'; setScreen('game', ''); }
+  function leave() { collectAllDrops(); showTown(); toast('얻은 경험치와 아이템은 유지됩니다. 잊지 말고 💾 저장하세요!', 3500); }
+  function onKey(e) { if (list.key(e)) return; if (e.code === 'Escape' && !e.repeat) resume(); }
+}
+
+function showDead() {
+  if (!RUN || RUN.state !== 'dead') return;
+  const cost = num(CFG.REVIVE_COST_PER_TIER, 50) * RUN.tier, can = P.gold >= cost;
+  setScreen('dead', '<div class="dim" style="background:rgba(60,0,0,.55)"></div><div class="screen"><div class="panel result">' +
+    '<div style="font-size:64px">💀</div><h2 style="margin:4px 0">쓰러졌습니다...</h2><div class="muted">부활하면 HP·MP가 모두 회복되고, 피격 횟수가 3회 추가됩니다.</div><ul class="menu" id="dMenu" style="margin-top:10px"></ul></div></div>', onKey);
+  const opts = [
+    { disabled: !can, html: '<span class="grow">✨ 부활하기</span><span class="' + (can ? 'gold' : 'down') + '">' + fmt(cost) + 'G</span>', fn: function () { if (!can) { toast('골드가 부족합니다.'); return; } revive(cost); } },
+    { html: '<span class="grow">🏘️ 마을로 귀환</span><span class="sub">얻은 경험치/아이템 유지</span>', fn: function () { collectAllDrops(); showTown(); toast('잊지 말고 💾 저장하세요!', 3000); } },
+  ];
+  const list = makeList($('#dMenu'), opts, { sel: can ? 0 : 1, onSelect: function (i) { opts[i].fn(); } });
+  function onKey(e) { list.key(e); }
+}
+
+function revive(cost) {
+  const p = RUN.player;
+  P.gold -= cost; markDirty();
+  p.hp = p.st.maxHp; p.mp = p.st.maxMp; p.invul = 2.5; p.action = null;
+  RUN.hits += 3; RUN.state = 'play';
+  fx({ type: 'ring', x: p.x, y: p.y, r0: 20, r1: 140, life: 0.8, color: '#ffe08a' });
+  setScreen('game', '');
+}
+
+function showResult() {
+  const R = RUN, r = R.result, d = R.d;
+  const items = {};
+  R.itemsGot.forEach(function (id) { items[id] = (items[id] || 0) + 1; });
+  const itemHtml = Object.keys(items).map(function (id) { const it = IDX.items[id]; return '<span class="g-' + esc(it.grade) + '">' + esc(it.emoji) + ' ' + esc(it.name) + (items[id] > 1 ? ' ×' + items[id] : '') + '</span>'; }).join('') || '<span class="muted">없음</span>';
+  setScreen('result', '<div class="dim"></div><div class="screen"><div class="panel result">' +
+    '<div class="muted">' + esc(d.emoji) + ' ' + esc(d.name) + ' 클리어!</div>' +
+    '<div class="grade">' + r.grade + '</div>' + (r.newBest ? '<div class="gold" style="font-size:.9em">★ 이 던전 최고 등급 갱신</div>' : '') +
+    '<div class="kv"><span>클리어 시간</span><span>' + fmtTime(r.time) + '</span><span>피격 횟수</span><span>' + R.hits + '</span><span>최대 콤보</span><span>' + R.maxCombo + '</span><span>처치 수</span><span>' + R.kills + '</span>' +
+    '<span>획득 경험치</span><span class="up">' + fmt(R.expGained + r.bonusExp) + ' <span class="muted" style="font-weight:400">(보너스 ' + fmt(r.bonusExp) + ')</span></span><span>획득 골드</span><span class="gold">' + fmt(R.goldGained + r.bonusGold) + 'G</span>' +
+    '<span>레벨</span><span>' + (P.level > R.startLevel ? 'Lv ' + R.startLevel + ' → <span class="up">Lv ' + P.level + '</span>' : 'Lv ' + P.level) + '</span><span>예상 점수</span><span>' + fmt(r.score) + '</span></div>' +
+    '<div class="drops">' + itemHtml + '</div>' +
+    '<div id="rankLine" style="margin:10px 0;min-height:1.4em" class="muted"></div>' +
+    '<ul class="menu" id="resMenu"></ul></div></div>', onKey);
+  const opts = [
+    { html: '<span class="grow">🏆 랭킹 등록</span><span class="key">Enter</span>', fn: registerRank },
+    { html: '<span class="grow">🔁 다시 도전</span><span class="key">R</span>', fn: function () { startDungeon(d); } },
+    { html: '<span class="grow">🏘️ 마을로</span><span class="key">Esc</span>', fn: function () { showTown(); if (S.dirty) toast('잊지 말고 💾 저장하세요!', 3000); } },
+  ];
+  const list = makeList($('#resMenu'), opts, { onSelect: function (i) { opts[i].fn(); } });
+  updateRankLine();
+  function onKey(e) {
+    if (list.key(e)) return;
+    if (e.code === 'KeyR') opts[1].fn();
+    else if (e.code === 'Escape') opts[2].fn();
+  }
+}
+
+function updateRankLine(msg) {
+  const el = $('#rankLine');
+  if (!el) return;
+  if (msg) { el.innerHTML = msg; return; }
+  el.innerHTML = RUN.submitted ? RUN.rankMsg : (S.saved ? '랭킹에 이 기록을 등록할 수 있어요.' : '※ 랭킹 등록 시 캐릭터가 먼저 저장됩니다.');
+}
+
+function registerRank() {
+  const R = RUN;
+  if (R.submitted) { toast('이미 등록한 기록입니다.'); return; }
+  if (R.submitting) return;
+  const go = function () {
+    R.submitting = true;
+    updateRankLine('랭킹 등록 중...');
+    Api.submitRecord(S.name, S.pin, { dungeonId: R.d.id, clearSec: Math.round(R.result.time * 10) / 10, hits: R.hits, maxCombo: R.maxCombo, level: P.level }).then(function (res) {
+      R.submitting = false;
+      if (res.ok) {
+        R.submitted = true; rankingCache = null;
+        R.rankMsg = '<span class="gold">✔ 등록 완료</span> — ' + esc(R.d.name) + ' ' + (res.rankDungeon ? '<b>' + res.rankDungeon + '위</b>' : '순위권 밖') +
+          ' · 종합 ' + (res.rankOverall ? '<b>' + res.rankOverall + '위</b>' : '순위권 밖') + ' · 점수 ' + fmt(res.score) + (res.isBest ? ' <span class="up">(개인 최고)</span>' : '');
+        updateRankLine();
+      } else updateRankLine('<span class="down">❌ ' + esc(res.message) + '</span>');
+    }).catch(function (e) { R.submitting = false; updateRankLine('<span class="down">❌ ' + esc(e.message) + '</span>'); });
+  };
+  if (S.saved) { go(); return; }
+  confirmBox('랭킹에 등록하려면 캐릭터를 먼저 저장해야 합니다.<br><b>지금 저장하고 등록할까요?</b>').then(function (ok) {
+    if (!ok) return;
+    doSave().then(function (saved) { if (saved) go(); else updateRankLine('<span class="down">저장에 실패해 등록하지 못했습니다.</span>'); });
+  });
+}
+
+/* ============ 8. 그리기 · 메인 루프 ============ */
+function renderRun() {
+  const R = RUN, p = R.player;
+  const camX = clamp(p.x - W / 2, 0, ROOM_W - W);
+  ctx.save();
+  if (R.shake > 0) ctx.translate(rnd(-R.shake, R.shake) * 0.5, rnd(-R.shake, R.shake) * 0.5);
+  Renderer.drawBackground(ctx, { bgTop: R.d.bgTop || '#222', bgBottom: R.d.bgBottom || '#444', emoji: R.d.emoji }, camX, ROOM_W, T);
+  if (!R.isBoss) Renderer.drawDoor(ctx, ROOM_W - 45, R.roomCleared, R.roomIdx + 1 === R.rooms - 1, camX, T);
+  R.fx.forEach(function (e) { if (e.type === 'tele') Renderer.drawEffects(ctx, [e], camX); });
+  R.drops.forEach(function (d) { Renderer.drawDrop(ctx, d, camX, T); });
+  const actors = R.mobs.slice();
+  actors.push(p);
+  actors.sort(function (a, b) { return a.y - b.y; });
+  actors.forEach(function (a) {
+    Renderer.drawActor(ctx, a, camX, T);
+    if (a === p) { if (p.swing != null) Renderer.drawWeapon(ctx, p, camX); }
+    else if (!a.boss && !a.dead && a.hp < a.maxHp) {
+      const w = a.size * 0.9;
+      Renderer.bar(ctx, a.x - camX - w / 2, a.y - a.z - a.size - 12, w, 5, a.hp / a.maxHp, '#e5484d');
+    }
+  });
+  R.projs.forEach(function (pr) { Renderer.drawProjectile(ctx, pr, camX, T); });
+  Renderer.drawEffects(ctx, R.fx.filter(function (e) { return e.type !== 'tele' && e.type !== 'banner'; }), camX);
+  ctx.restore();
+  if (R.state === 'fade') { ctx.fillStyle = 'rgba(0,0,0,' + (1 - Math.abs(R.stateT - 0.25) * 4) + ')'; ctx.fillRect(0, 0, W, H); }
+  drawHud();
+  Renderer.drawEffects(ctx, R.fx.filter(function (e) { return e.type === 'banner'; }), 0);
+}
+
+function drawHud() {
+  const R = RUN, p = R.player, st = p.st;
+  // 상단: 던전 이름 / 시간
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(ctx, 10, 10, 250, 34, 8); ctx.fill();
+  ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#ffcc4d';
+  ctx.fillText(R.d.emoji + ' ' + R.d.name, 20, 32);
+  ctx.fillStyle = '#ddd'; ctx.font = '13px sans-serif';
+  ctx.fillText(R.isBoss ? 'BOSS' : '방 ' + (R.roomIdx + 1) + '/' + R.rooms, 190, 32);
+  ctx.textAlign = 'center'; ctx.font = 'bold 20px ui-monospace, Menlo, Consolas, monospace';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(ctx, W / 2 - 60, 10, 120, 32, 8); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillText(fmtTime(R.time), W / 2, 33);
+
+  // 미니맵
+  const mw = 22, gap = 5, mx = W - 12 - R.rooms * (mw + gap);
+  for (let i = 0; i < R.rooms; i++) {
+    ctx.fillStyle = i < R.roomIdx ? '#6b5f8a' : i === R.roomIdx ? '#ffcc4d' : 'rgba(0,0,0,0.6)';
+    roundRect(ctx, mx + i * (mw + gap), 14, mw, mw, 4); ctx.fill();
+    ctx.strokeStyle = '#8d7fb5'; ctx.lineWidth = 1; ctx.stroke();
+    if (i === R.rooms - 1) { ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.fillText('💀', mx + i * (mw + gap) + mw / 2, 30); }
+  }
+
+  // 보스 체력
+  const boss = R.mobs.find(function (m) { return m.boss && !m.dead; });
+  if (boss) {
+    const bw = 460, bx = W / 2 - bw / 2;
+    ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = boss.enraged ? '#ff6b6b' : '#fff';
+    ctx.fillText(boss.emoji + ' ' + boss.data.name + (boss.enraged ? ' (분노)' : ''), W / 2, 62);
+    Renderer.bar(ctx, bx, 68, bw, 14, boss.hp / boss.maxHp, boss.enraged ? '#ff3b3b' : '#c7304a', Math.ceil(boss.hp / boss.maxHp * 100) + '%');
+  }
+
+  // 콤보
+  if (R.combo >= 2) {
+    const a = Math.min(1, R.comboT / 0.4);
+    ctx.globalAlpha = a; ctx.textAlign = 'right';
+    ctx.font = '900 46px sans-serif'; ctx.lineWidth = 6; ctx.strokeStyle = '#000';
+    ctx.strokeText(R.combo, W - 24, 140); ctx.fillStyle = '#ffcc4d'; ctx.fillText(R.combo, W - 24, 140);
+    ctx.font = 'bold 16px sans-serif'; ctx.strokeText('COMBO', W - 24, 160); ctx.fillStyle = '#fff'; ctx.fillText('COMBO', W - 24, 160);
+    ctx.globalAlpha = 1;
+  }
+
+  // 하단 패널
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, H - 62, W, 62);
+  const face = SpriteSource.get(p.emoji, 36);
+  ctx.drawImage(face, 14, H - 58);
+  ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#ffe08a';
+  ctx.fillText('Lv ' + P.level, 16, H - 6);
+  Renderer.bar(ctx, 70, H - 52, 230, 16, p.hp / st.maxHp, '#e5484d', 'HP ' + fmt(p.hp) + ' / ' + fmt(st.maxHp));
+  Renderer.bar(ctx, 70, H - 30, 230, 14, p.mp / st.maxMp, '#3e7bfa', 'MP ' + fmt(p.mp) + ' / ' + fmt(st.maxMp));
+  if (p.buffT > 0) { ctx.font = '13px sans-serif'; ctx.fillStyle = '#ff9b6b'; ctx.fillText('🔥 ' + Math.ceil(p.buffT) + 's', 306, H - 38); }
+
+  // 스킬 슬롯
+  const s = 42, sk = classSkills();
+  let x = 350;
+  Renderer.skillSlot(ctx, x, H - 54, s, '🗡️', 'X', 0, false, false); x += s + 6;
+  sk.forEach(function (k) {
+    const locked = P.level < num(k.reqLevel), cd = Math.max(0, p.cds[k.id] || 0);
+    Renderer.skillSlot(ctx, x, H - 54, s, k.emoji, String(k.key).toUpperCase(), cd / num(k.cooldown, 1), p.mp < num(k.mp), locked);
+    x += s + 6;
+  });
+  // 포션
+  x += 8;
+  [['1', 'hp', '🧪'], ['2', 'mp', '💧']].forEach(function (q) {
+    const cnt = DATA.items.filter(function (it) { return it.type === 'potion' && num(q[1] === 'hp' ? it.healHp : it.healMp) > 0; }).reduce(function (a, it) { return a + invCount(it.id); }, 0);
+    Renderer.skillSlot(ctx, x, H - 54, s, q[2], q[0], 0, cnt === 0, false);
+    ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.fillText('×' + cnt, x + s - 3, H - 16);
+    x += s + 6;
+  });
+  // 경험치 바
+  const need = num(levelRow(P.level).needExp);
+  ctx.fillStyle = '#1a1528'; ctx.fillRect(0, H - 5, W, 5);
+  ctx.fillStyle = '#7ee787'; ctx.fillRect(0, H - 5, P.level >= maxLevel() ? W : W * (need ? P.exp / need : 0), 5);
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now; T += dt;
+  if (P) P.playSec += dt;
+  if (RUN) {
+    if (screen === 'game') updateRun(RUN.state === 'clear' ? dt * 0.4 : dt);
+    else if (screen === 'result' || screen === 'dead') updateFx(dt);
+  }
+  if (!(RUN && screen === 'game' && RUN.hitStop > 0)) Keys.pressed.clear();   // 히트스톱 중 입력은 보존
+  if (RUN && ['game', 'pause', 'dead', 'result'].indexOf(screen) >= 0) renderRun();
+  else Renderer.drawTown(ctx, T, P ? classOf().emoji : '🤺');
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('beforeunload', function (e) {
+  if (S.dirty && S.name) { e.preventDefault(); e.returnValue = ''; }
+});
+
+/* ---- 시작 ---- */
+(function boot() {
+  resize();
+  requestAnimationFrame(frame);
+  showLoading('⚔️ 게임 데이터를 불러오는 중...');
+  Api.getGameData().then(function (d) {
+    DATA = d; buildIndex();
+    document.title = CFG.GAME_TITLE || document.title;
+    showLogin();
+  }).catch(function (e) { showError(e.message || String(e)); });
+})();
+</script>
