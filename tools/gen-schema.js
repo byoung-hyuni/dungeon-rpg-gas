@@ -25,6 +25,7 @@ Object.keys(SEED).forEach(n => {
 md += '## Players (게임이 기록)\n\n캐릭터 저장 데이터. `savePlayer`가 이름으로 행을 찾아 덮어씀. 이름·해시·JSON 열은 텍스트 서식(@).\n\n' + table(PLAYER_HEADERS, PLAYER_NOTES) +
   '\n\nJSON 예시\n\n```json\n{ "equip": {"weapon":"w_rusty","armor":"a_cloth","accessory":""},\n  "inventory": [{"id":"p_hp","qty":5},{"id":"w_goblin","qty":1}],\n  "bestGrades": {"d1":"S","d2":"A"} }\n```\n\n';
 md += '## Rankings (게임이 기록)\n\n클리어 기록을 한 줄씩 추가(삭제·수정 없음). 순위는 `buildRankings_`가 이름·던전별 최고 점수로 계산.\n\n' + table(RANK_HEADERS, RANK_NOTES) + '\n\n';
+md += '## EventRecipients (이벤트 발송 명단)\n\n최초 발송 때 생성합니다. name은 소문자 사용자 이름, eventId는 이벤트 ID, sentAt은 발송 시각입니다. 재실행해도 명단을 확장하지 않습니다.\n\n';
 md += '## 안내\n\n`setup()`이 만드는 설명용 시트. 코드가 읽지 않음.\n';
 fs.mkdirSync(path.join(__dirname, '../docs'), { recursive: true });
 fs.writeFileSync(path.join(__dirname, '../docs/DATA_SCHEMA.md'), md);

@@ -376,3 +376,11 @@ flowchart LR
     HP --> Z{"hp ≤ 0"}
     Z -- 예 --> OPD[onPlayerDead → showDead]
 ```
+
+## 신규 직업·이벤트 호출 관계
+
+`menuAddNewClasses → addNewClasses_ → Classes / Skills / Items` 순서로 누락된 데이터만 추가합니다. `menuSendEventReward → sendEventReward_ → EventRecipients` 순서로 최초 발송 명단을 확정합니다.
+
+`savePlayer → applyEventReward_ → isEventRecipient_`에서 수령 조건을 확인하고, Players 행에 보상과 수령 기록을 함께 저장합니다. `publicPlayer_`가 공개 수령 상태를 반환하며 `doSave`가 캐릭터에 반영합니다.
+
+클라이언트 `runAction → fireBasicShot → updateProjs`가 거너 기본 탄환을 처리합니다. `makePlayer`가 classId를 전달하고 `Renderer.drawWeapon`이 직업별 무기 그림을 선택합니다.

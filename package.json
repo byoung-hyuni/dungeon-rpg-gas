@@ -11,6 +11,7 @@
     "push": "clasp push -f",
     "deploy": "clasp create-deployment -i YOUR_DEPLOYMENT_ID -d",
     "deployments": "clasp list-deployments",
-    "open": "clasp open-script"
+    "open": "clasp open-script",
+    "test:classes": "node tools/build.js && node tools/classes-event.test.js"
   }
 }

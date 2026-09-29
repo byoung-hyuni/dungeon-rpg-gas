@@ -235,3 +235,20 @@ sequenceDiagram
 - [ ] 쓰기 작업이면 Lock 안에서, PIN 검증 포함
 - [ ] `tools/server.test.js`에 성공·실패 케이스 추가
 - [ ] 이 문서의 명세·시퀀스 수정
+
+## 4. 신규 직업 이벤트 API 변경
+
+`login.player`와 `savePlayer.player`에 `rewardVersion`(미수령 0, 수령 1), `rewardPending`(수령 대기 여부)을 반환합니다. `exportP`는 `rewardVersion`을 보내며 이전 저장에는 0을 적용합니다. `eventReward` 수령 기록은 클라이언트 입력으로 변경할 수 없습니다.
+
+`savePlayer` 성공 응답에 공개 캐릭터 `player`와 `{claimed, pending, message?}` 형태의 `reward`를 추가했습니다. PIN 확인 뒤 수령 버전을 비교하고, 버전이 다르면 쓰지 않고 `{ok:false, message}`를 반환합니다. 대기 보상은 공간과 골드 한도가 충분할 때 저장 데이터에 합산합니다. 골드·물약·수령 기록은 같은 행에서 저장합니다.
+
+| 함수 | 역할 | 호출 범위 |
+|---|---|---|
+| `menuAddNewClasses` | 운영 시트에 누락된 직업·스킬·시작 무기를 추가합니다. | 시트 UI 확인 후 실행합니다. |
+| `addNewClasses_` | 추가 작업을 잠금 안에서 실행하고 캐시를 비웁니다. | 비공개 함수입니다. |
+| `menuSendEventReward` | 발송 내역과 수령 방법을 안내합니다. | 시트 UI에서 확인해야 실행합니다. |
+| `sendEventReward_` | 최초 발송 명단을 기록하고 Players 컬럼을 확장합니다. | 비공개 함수입니다. |
+| `isEventRecipient_` | 고정 명단에서 대상 여부를 조회합니다. | 비공개 함수입니다. |
+| `applyEventReward_` | 보상 전체를 합산하거나 보관합니다. | savePlayer 잠금 안에서 호출합니다. |
+
+운영 절차와 수령 조건은 [신규 직업·이벤트 안내](NEW_CLASSES_EVENT.md)를 확인하세요.

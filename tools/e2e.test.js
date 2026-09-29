@@ -1,4 +1,4 @@
-const { chromium } = require('/path/to/developer/.npm-global/lib/node_modules/playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const path = require('path');
 const SHOT = n => path.join(__dirname, 'shots', n + '.png');
 (async () => {

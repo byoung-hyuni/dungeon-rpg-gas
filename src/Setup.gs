@@ -14,6 +14,8 @@ function onOpen() {
     .addSeparator()
     .addItem('캐시 비우기 (시트 수정 후 즉시 반영)', 'clearGameCache')
     .addItem('플레이어 PIN 초기화', 'menuResetPin')
+    .addItem('격투가·거너 데이터 추가', 'menuAddNewClasses')
+    .addItem('기존 사용자 이벤트 보상 발송', 'menuSendEventReward')
     .addItem('웹 앱 주소 보기', 'showWebAppUrl')
     .addToUi();
 }
@@ -146,4 +148,59 @@ function ensureGuideSheet_(ss) {
   sh.getRange(3, 1, 1, 2).setFontWeight('bold').setBackground('#2b2d42').setFontColor('#ffffff');
   sh.setColumnWidth(1, 140);
   sh.setColumnWidth(2, 560);
+}
+
+/** 운영 시트의 기존 행은 유지하고 이번 직업의 누락 행만 추가합니다. */
+function menuAddNewClasses() {
+  const ui = SpreadsheetApp.getUi();
+  const count = addNewClasses_();
+  ui.alert('새 직업 데이터 ' + count + '개 행을 추가했습니다.');
+}
+
+function addNewClasses_() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    let count = 0;
+    ['Classes', 'Skills', 'Items'].forEach(function (name) {
+      const sh = sheet_(name), headers = headers_(sh), def = SEED[name];
+      const existing = readTable_(sh).map(function (r) { return r.id; });
+      const classIndex = def.headers.indexOf(name === 'Classes' ? 'id' : 'classId');
+      def.headers.forEach(function (h) { if (headers.indexOf(h) < 0) throw new Error(name + ' 시트에 ' + h + ' 컬럼이 없습니다.'); });
+      def.rows.forEach(function (row) {
+        const wanted = name === 'Items' ? ['w_gloves', 'w_pistol'].indexOf(row[0]) >= 0 : ['fighter', 'gunner'].indexOf(row[classIndex]) >= 0;
+        if (!wanted || existing.indexOf(row[0]) >= 0) return;
+        sh.appendRow(headers.map(function (h) { const i = def.headers.indexOf(h); return i < 0 ? '' : row[i]; }));
+        count++;
+      });
+    });
+    clearGameCache(true);
+    return count;
+  } finally { lock.releaseLock(); }
+}
+
+function menuSendEventReward() {
+  const ui = SpreadsheetApp.getUi();
+  if (ui.alert('이벤트 보상 발송', '현재 저장된 사용자에게 5,000골드와 HP·MP 포션 각 100개의 수령 권한을 발송합니다. 이후 가입자는 제외하며, 다시 실행해도 중복 발송하지 않습니다. 계속할까요?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  const result = sendEventReward_();
+  ui.alert((result.alreadySent ? '이미 발송한 이벤트입니다. 대상은 ' : '발송했습니다. 대상은 ') + result.count + '명입니다. 마을에서 저장하면 보상을 받습니다.');
+}
+
+/** 명단 전체를 한 번에 기록하므로 재실행해도 신규 사용자가 대상에 추가되지 않습니다. */
+function sendEventReward_() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const players = sheet_('Players'), headers = headers_(players);
+    if (headers.indexOf('eventReward') < 0) players.getRange(1, headers.length + 1).setValue('eventReward');
+    const ss = getSS_();
+    let sh = ss.getSheetByName(EVENT_REWARD_SHEET);
+    if (sh && sh.getLastRow() > 0) return { alreadySent: true, count: Math.max(0, sh.getLastRow() - 1) };
+    if (!sh) sh = ss.insertSheet(EVENT_REWARD_SHEET);
+    const names = readTable_(players).map(function (p) { return String(p.name).trim().toLowerCase(); });
+    const rows = [['name', 'eventId', 'sentAt']].concat(names.map(function (name) { return [name, EVENT_REWARD_ID, fmtTime_(new Date())]; }));
+    sh.getRange(1, 1, rows.length, 3).setNumberFormat('@').setValues(rows);
+    sh.setFrozenRows(1);
+    return { alreadySent: false, count: names.length };
+  } finally { lock.releaseLock(); }
 }

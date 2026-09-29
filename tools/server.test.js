@@ -62,3 +62,116 @@ ctx.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Items').getRange(2, 2)
 g('resetGameData()');   // UI 없음 → 아무것도 하지 않아야 함
 assert.strictEqual(ctx.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Items').getRange(2, 2).getValue(), '변조');
 console.log('ALL SERVER TESTS PASSED');
+
+// 새 직업의 참조와 저장 호환성을 확인합니다.
+assert.deepStrictEqual(data.classes.map(c => c.id), ['swordsman', 'fighter', 'gunner']);
+for (const cid of ['fighter', 'gunner']) {
+  const skills = data.skills.filter(s => s.classId === cid);
+  assert.strictEqual(skills.length, 7);
+  assert.strictEqual(new Set(skills.map(s => s.key)).size, 7);
+  ctx.newP = { ...ctx.P, classId: cid };
+  assert(g(`savePlayer('${cid}','1234',newP,true)`).ok);
+  assert.strictEqual(g(`login('${cid}','1234')`).player.classId, cid);
+}
+assert.throws(() => g('menuAddNewClasses()'), /No UI/);
+assert.throws(() => g('menuSendEventReward()'), /No UI/);
+assert.strictEqual(g('addNewClasses_()'), 0);
+// 이전 시트 형태에서 추가하고 반복 실행해도 기존 설정을 보존합니다.
+g(`['Classes','Skills','Items'].forEach(function(name) {
+  const def = SEED[name];
+  const rows = def.rows.filter(function(r) { return !['fighter','gunner'].includes(r[name==='Classes'?0:1]) && !['w_gloves','w_pistol'].includes(r[0]); });
+  const sh = sheet_(name); sh.clear(); sh.getRange(1,1,rows.length+1,def.headers.length).setValues([def.headers].concat(rows));
+}); sheet_('Classes').getRange(2,10).setValue('운영 설명입니다.'); clearGameCache(true);`);
+assert.strictEqual(g('addNewClasses_()'), 18);
+assert.strictEqual(g('addNewClasses_()'), 0);
+assert.strictEqual(g("sheet_('Classes').getRange(2,10).getValue()"), '운영 설명입니다.');
+
+// 구버전 Players 헤더를 자동 확장하고 발송 명단을 고정합니다.
+g(`const legacyRows = sheet_('Players').getDataRange().getValues().map(r => r.slice(0,14));
+  sheet_('Players').clear(); sheet_('Players').getRange(1,1,legacyRows.length,14).setValues(legacyRows);`);
+const before = g("login('용사1','1234')").player;
+ctx.before = before;
+const sent = g('sendEventReward_()');
+assert.strictEqual(sent.count, 4);
+assert(!sent.alreadySent);
+assert.strictEqual(g("headers_(sheet_('Players')).indexOf('eventReward')"), 14);
+assert(g("login('용사1','1234')").player.rewardPending);
+assert(g("savePlayer('신규사용자','1234',P,true)").ok);
+assert.strictEqual(g('sendEventReward_()').count, 4);
+assert.strictEqual(g("login('신규사용자','1234')").player.rewardPending, false);
+assert(!g("savePlayer('용사1','0000',before,false)").ok);
+r = g("savePlayer('용사1','1234',before,false)");
+assert(r.ok && r.reward.claimed);
+assert.strictEqual(r.player.gold, before.gold + 5000);
+for (const id of ['p_hp', 'p_mp']) {
+  const count = p => p.inventory.filter(s => s.id === id).reduce((n,s) => n+s.qty,0);
+  assert.strictEqual(count(r.player), count(before)+100);
+}
+assert.strictEqual(r.player.rewardVersion, 1);
+assert(!('pinHash' in r.player));
+assert(!g("savePlayer('용사1','1234',before,false)").ok, '오래된 저장으로 보상을 덮어쓰지 않습니다.');
+ctx.rewarded = r.player;
+r = g("savePlayer('용사1','1234',rewarded,false)");
+assert(r.ok && !r.reward.claimed);
+assert.strictEqual(r.player.gold, ctx.rewarded.gold);
+// 꽉 찬 가방 / 골드 한도에서는 부분 지급 없이 보관합니다.
+ctx.full = { ...g("login('fighter','1234')").player, inventory: Array.from({length:30},()=>({id:'w_rusty',qty:1})) };
+r = g("savePlayer('fighter','1234',full,false)");
+assert(r.ok && r.reward.pending && !r.reward.claimed);
+assert.strictEqual(r.player.gold, ctx.full.gold);
+assert.strictEqual(r.player.inventory.length, 30);
+ctx.full.inventory = [{id:'p_hp',qty:99},{id:'p_mp',qty:98}];
+ctx.full.gold = 999999999;
+assert(g("savePlayer('fighter','1234',full,false)").reward.pending);
+ctx.full.gold = 100;
+r = g("savePlayer('fighter','1234',full,false)");
+assert(r.reward.claimed);
+assert.strictEqual(r.player.gold, 5100);
+assert.strictEqual(r.player.inventory.filter(s=>s.id==='p_hp').reduce((n,s)=>n+s.qty,0),199);
+assert.strictEqual(r.player.inventory.filter(s=>s.id==='p_mp').reduce((n,s)=>n+s.qty,0),198);
+// 쓰기 실패 뒤 재시도해도 한 번만 지급합니다.
+ctx.failP = g("login('gunner','1234')").player;
+g(`const originalSheet = sheet_; let failWrite = true;
+  sheet_ = function(name) {
+    const sh = originalSheet(name);
+    if (name !== 'Players' || !failWrite) return sh;
+    return new Proxy(sh, { get(target,key) {
+      if (key !== 'getRange') return target[key];
+      return function(...args) { const range=target.getRange(...args);
+        return new Proxy(range,{get(t,k) { if(k==='setValues') return function(){failWrite=false;throw new Error('쓰기 실패');}; return t[k]; }});
+      };
+    }});
+  };`);
+assert.throws(()=>g("savePlayer('gunner','1234',failP,false)"), /쓰기 실패/);
+g('sheet_ = originalSheet');
+r = g("savePlayer('gunner','1234',failP,false)");
+assert(r.reward.claimed && r.player.gold === ctx.failP.gold+5000);
+console.log('NEW CLASSES AND EVENT REWARD TESTS PASSED');
+// 서버에는 기록됐지만 응답을 잃은 경우 재시도로 중복 지급하지 않습니다.
+ctx.lostP = g("login('검객','7777')").player;
+g(`let loseResponse = true;
+  sheet_ = function(name) {
+    const sh = originalSheet(name);
+    if (name !== 'Players' || !loseResponse) return sh;
+    return new Proxy(sh,{get(target,key){
+      if(key!=='getRange') return target[key];
+      return function(...args){ const range=target.getRange(...args);
+        return new Proxy(range,{get(t,k){ if(k==='setValues') return function(values){ t.setValues(values);loseResponse=false;throw new Error('응답 유실');};return t[k]; }});
+      };
+    }});
+  };`);
+assert.throws(()=>g("savePlayer('검객','7777',lostP,false)"),/응답 유실/);
+g('sheet_ = originalSheet');
+assert(!g("savePlayer('검객','7777',lostP,false)").ok);
+assert.strictEqual(g("login('검객','7777')").player.gold,ctx.lostP.gold+5000);
+// 수령 버전 외의 운영용 추가 컬럼도 저장 시 유지합니다.
+g("sheet_('Players').getRange(1,16).setValue('adminNote'); sheet_('Players').getRange(2,16).setValue('유지합니다.');");
+assert(g("savePlayer('용사1','1234',rewarded,false)").ok);
+assert.strictEqual(g("sheet_('Players').getRange(2,16).getValue()"),'유지합니다.');
+// 대상 0명으로 발송한 이벤트도 종료한 명단으로 취급합니다.
+g('GasMock.reset(); clearGameCache(true); setup();');
+assert.strictEqual(g('sendEventReward_()').count,0);
+assert(g("savePlayer('늦은가입','1234',P,true)").ok);
+assert.strictEqual(g('sendEventReward_()').count,0);
+assert(!g("login('늦은가입','1234')").player.rewardPending);
+console.log('REWARD RESPONSE LOSS AND EMPTY CAMPAIGN TESTS PASSED');

@@ -14,6 +14,8 @@
 const DATA_SHEETS = ['Config', 'Levels', 'Classes', 'Skills', 'Dungeons', 'Monsters', 'Items'];
 const CACHE_DATA_KEY = 'GAME_DATA_V1';
 const CACHE_RANK_KEY = 'RANKINGS_V1';
+const EVENT_REWARD_ID = 'new_classes_20260929';
+const EVENT_REWARD_SHEET = 'EventRecipients';
 const GRADES = ['SSS', 'SS', 'S', 'A', 'B', 'C', 'D', 'F'];
 
 /* ================= 웹 앱 진입점 ================= */
@@ -108,6 +110,9 @@ function savePlayer(name, pin, data, expectNew) {
       if (found.rec.pinHash !== hash) {
         return { ok: false, message: expectNew ? '이미 다른 사람이 사용 중인 이름입니다. 다른 이름으로 시작하세요.' : 'PIN이 일치하지 않아 저장할 수 없습니다.' };
       }
+      if (Number((data && data.rewardVersion) || 0) !== (found.rec.eventReward === EVENT_REWARD_ID ? 1 : 0)) {
+        return { ok: false, message: '서버에 이벤트 보상 수령 기록이 있습니다. 보상을 보호하기 위해 저장을 중단했습니다. 다시 로그인하세요.' };
+      }
       createdAt = found.rec.createdAt || now;
       saveCount = (Number(found.rec.saveCount) || 0) + 1;
       row = found.row;
@@ -115,14 +120,16 @@ function savePlayer(name, pin, data, expectNew) {
       row = sh.getLastRow() + 1;
     }
 
-    const rec = {
+    const reward = applyEventReward_(name, p, found && found.rec.eventReward, gd);
+    const rec = Object.assign({}, found ? found.rec : {}, {
+      eventReward: reward.claimed ? EVENT_REWARD_ID : (found ? found.rec.eventReward || '' : ''),
       name: name, pinHash: hash, classId: p.classId, level: p.level, exp: p.exp, gold: p.gold,
       equip: JSON.stringify(p.equip), inventory: JSON.stringify(p.inventory), cleared: p.cleared,
       bestGrades: JSON.stringify(p.bestGrades), playSec: p.playSec,
       createdAt: createdAt, updatedAt: now, saveCount: saveCount,
-    };
+    });
     sh.getRange(row, 1, 1, headers.length).setValues([headers.map(function (h) { return rec[h] !== undefined ? rec[h] : ''; })]);
-    return { ok: true, isNew: !found, savedAt: fmtTime_(now), saveCount: saveCount };
+    return { ok: true, isNew: !found, savedAt: fmtTime_(now), saveCount: saveCount, player: publicPlayer_(rec), reward: reward };
   } finally {
     lock.releaseLock();
   }
@@ -335,6 +342,8 @@ function publicPlayer_(rec) {
     cleared: Number(rec.cleared) || 0, bestGrades: parseJson_(rec.bestGrades, {}), playSec: Number(rec.playSec) || 0,
     updatedAt: rec.updatedAt instanceof Date ? fmtTime_(rec.updatedAt) : String(rec.updatedAt || ''),
     saveCount: Number(rec.saveCount) || 0,
+    rewardVersion: rec.eventReward === EVENT_REWARD_ID ? 1 : 0,
+    rewardPending: rec.eventReward !== EVENT_REWARD_ID && isEventRecipient_(rec.name),
   };
 }
 
@@ -416,4 +425,35 @@ function parseJson_(s, fallback) {
 
 function fmtTime_(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone() || 'Asia/Seoul', 'yyyy-MM-dd HH:mm');
+}
+
+/** 보상 대상은 발송 당시 확정한 명단으로만 확인합니다. */
+function isEventRecipient_(name) {
+  const sh = getSS_().getSheetByName(EVENT_REWARD_SHEET);
+  return !!sh && readTable_(sh).some(function (r) {
+    return String(r.name).toLowerCase() === String(name).toLowerCase() && r.eventId === EVENT_REWARD_ID;
+  });
+}
+
+/** savePlayer의 잠금 안에서만 호출합니다. 잔액과 수령 표시는 같은 행 쓰기로 저장합니다. */
+function applyEventReward_(name, p, claimedId, gd) {
+  if (claimedId === EVENT_REWARD_ID || !isEventRecipient_(name)) return { claimed: false, pending: false };
+  const inventory = p.inventory.map(function (s) { return { id: s.id, qty: s.qty }; });
+  if (!['p_hp', 'p_mp'].every(function (id) { return gd.items.some(function (it) { return it.id === id && it.type === 'potion'; }); })) {
+    return { claimed: false, pending: true, message: '보상 물약 설정을 확인해야 합니다. 관리자에게 문의하세요.' };
+  }
+  ['p_hp', 'p_mp'].forEach(function (id) {
+    let qty = 100;
+    inventory.forEach(function (slot) {
+      if (slot.id !== id || qty <= 0 || slot.qty >= 99) return;
+      const add = Math.min(qty, 99 - slot.qty); slot.qty += add; qty -= add;
+    });
+    while (qty > 0) { const add = Math.min(qty, 99); inventory.push({ id: id, qty: add }); qty -= add; }
+  });
+  if (inventory.length > (Number(gd.config.INVENTORY_SIZE) || 30) || p.gold > 999999999 - 5000) {
+    return { claimed: false, pending: true, message: '이벤트 보상을 보관하고 있습니다. 인벤토리를 최대 4칸 비우고 골드 보유 한도를 확인한 뒤 다시 저장하세요.' };
+  }
+  p.gold += 5000;
+  p.inventory = inventory;
+  return { claimed: true, pending: false, message: '이벤트 보상으로 5,000골드와 HP·MP 포션 각 100개를 받았습니다.' };
 }

@@ -172,3 +172,9 @@ Sheets가 숫자·날짜로 자동 변환하지 않도록 `setup()`이 텍스트
 3. `npm run schema`로 `docs/DATA_SCHEMA.md` 재생성, 이 문서의 ER 다이어그램도 수정
 4. 실서비스 시트에 컬럼을 추가하는 방법을 사용자에게 안내 (에이전트는 시트를 직접 못 고치는 경우가 많음)
 5. Players에 필드를 추가하면 `PLAYER_HEADERS`, `sanitizePlayer_`, `publicPlayer_`, 클라이언트 `exportP`를 함께 수정하고, 기존 행(값 없음)도 읽히는지 테스트
+
+## 신규 직업 이벤트 스키마
+
+`Players` 마지막 컬럼에 `eventReward`를 추가합니다. 빈 값은 미수령, `new_classes_20260929`는 해당 이벤트 수령 완료입니다. 기존 시트는 발송 메뉴에서 자동으로 확장합니다. 이전 저장 데이터는 빈 값으로 읽습니다.
+
+`EventRecipients`는 최초 발송 때 생성하며 `name`, `eventId`, `sentAt` 컬럼을 사용합니다. `name`은 Players.name을 소문자로 정규화한 참조 키입니다. 대상자가 없어도 헤더를 기록해 이후 가입자가 대상에 들어오지 않도록 합니다. 데이터 초기화 메뉴의 대상에 포함하지 않습니다.

@@ -147,14 +147,17 @@ const Renderer = {
   /** 플레이어 무기(검) — 공격 단계에 따라 휘두르는 각도가 바뀐다 */
   drawWeapon: function (ctx, p, camX) {
     const sx = p.x - camX, sy = p.y - p.z - p.size * 0.45;
-    const spr = SpriteSource.get('🗡️', p.size * 0.7);
+    const spr = SpriteSource.get(p.classId === 'fighter' ? '🥊' : p.classId === 'gunner' ? '🔫' : '🗡️', p.size * 0.7);
     let ang = -0.6;
     if (p.swing != null) ang = -2.0 + p.swing * 3.0;   // 0→1 로 진행하며 위에서 아래로
     ctx.save();
     ctx.translate(sx + p.facing * p.size * 0.35, sy);
     ctx.scale(p.facing, 1);
-    ctx.rotate(ang + Math.PI / 4);
-    ctx.drawImage(spr, -spr.width * 0.2, -spr.height * 0.8);
+    ctx.rotate(p.classId === 'gunner' ? 0 : ang + Math.PI / 4);
+    if (p.classId === 'gunner') {
+      ctx.scale(-1, 1);
+      ctx.drawImage(spr, -spr.width * 0.8, -spr.height * 0.8);
+    } else ctx.drawImage(spr, -spr.width * 0.2, -spr.height * 0.8);
     ctx.restore();
   },
 

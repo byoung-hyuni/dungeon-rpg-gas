@@ -97,7 +97,7 @@ function calcStats(p) {
 
 function newCharacter(classId) {
   P = { classId: classId, level: 1, exp: 0, gold: num(CFG.START_GOLD, 300), equip: { weapon: '', armor: '', accessory: '' }, inventory: [], cleared: 0, bestGrades: {}, playSec: 0 };
-  [['weapon', CFG.START_WEAPON], ['armor', CFG.START_ARMOR]].forEach(function (a) { if (IDX.items[a[1]]) P.equip[a[0]] = a[1]; });
+  [['weapon', ({ fighter: 'w_gloves', gunner: 'w_pistol' })[classId] || CFG.START_WEAPON], ['armor', CFG.START_ARMOR]].forEach(function (a) { if (IDX.items[a[1]]) P.equip[a[0]] = a[1]; });
   String(CFG.START_ITEMS || '').split(',').forEach(function (t) {
     const kv = t.split(':'), id = (kv[0] || '').trim();
     if (IDX.items[id]) invAdd(id, num(kv[1], 1));
@@ -146,7 +146,7 @@ function lockReason(d) {
 
 function markDirty() { S.dirty = true; }
 function exportP() {
-  return { classId: P.classId, level: P.level, exp: P.exp, gold: P.gold, equip: P.equip, inventory: P.inventory, cleared: P.cleared, bestGrades: P.bestGrades, playSec: Math.floor(P.playSec) };
+  return { classId: P.classId, level: P.level, exp: P.exp, gold: P.gold, equip: P.equip, inventory: P.inventory, cleared: P.cleared, bestGrades: P.bestGrades, playSec: Math.floor(P.playSec), rewardVersion: P.rewardVersion || 0 };
 }
 
 /** 저장하기: 이름 + PIN + 캐릭터 데이터를 시트에 기록 */
@@ -156,8 +156,9 @@ function doSave() {
   toast('💾 저장 중...');
   return Api.save(S.name, S.pin, exportP(), S.expectNew).then(function (r) {
     if (!r.ok) { toast('❌ ' + r.message, 4000); return false; }
+    if (r.player) P = r.player;
     S.saved = true; S.expectNew = false; S.dirty = false; S.lastSavedAt = r.savedAt;
-    toast('💾 저장 완료 (' + r.savedAt + ')');
+    toast(r.reward && r.reward.message ? r.reward.message : '💾 저장 완료 (' + r.savedAt + ')', 5000);
     return true;
   }).catch(function (e) {
     toast('❌ 저장 실패: ' + e.message, 4000); return false;
@@ -176,6 +177,7 @@ const pressed = function (code) { return Keys.pressed.has(code); };
 const held = function (code) { return Keys.down.has(code); };
 
 document.addEventListener('keydown', function (e) {
+  if (S.saving) { e.preventDefault(); return; }
   hideFocusHint();
   const inInput = e.target && e.target.tagName === 'INPUT';
   if (modalHandler) { e.preventDefault(); if (!e.repeat) modalHandler(e); return; }
@@ -193,6 +195,7 @@ document.addEventListener('keydown', function (e) {
   }
   if (screenKey) screenKey(e);
 });
+document.addEventListener('click', function (e) { if (S.saving) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
 document.addEventListener('keyup', function (e) { Keys.down.delete(e.code); });
 window.addEventListener('blur', function () { Keys.down.clear(); showFocusHint(); });
 window.addEventListener('focus', hideFocusHint);
@@ -404,6 +407,7 @@ function charCard() {
     '<div class="muted">' + esc(classOf().name) + ' · <b style="color:#fff">Lv ' + P.level + '</b>' + (P.level >= maxLevel() ? ' <span class="gold">MAX</span>' : '') + '</div></div></div>' +
     '<div class="bar"><i style="width:' + expPct.toFixed(1) + '%"></i></div><div class="muted" style="font-size:.8em">EXP ' + fmt(P.exp) + ' / ' + (P.level >= maxLevel() ? '-' : fmt(need)) + '</div>' +
     '<div class="stat"><span>HP <b>' + fmt(st.maxHp) + '</b></span><span>MP <b>' + fmt(st.maxMp) + '</b></span><span>공격력 <b>' + fmt(st.atk) + '</b></span><span>방어력 <b>' + fmt(st.def) + '</b></span><span>치명타 <b>' + st.crit + '%</b></span><span>골드 <b class="gold">' + fmt(P.gold) + '</b></span></div>' +
+    (P.rewardPending ? '<div class="gold" style="margin-top:8px">🎁 이벤트 보상이 도착했습니다.<br>저장하면 5,000골드와 HP·MP 포션 각 100개를 받습니다.</div>' : '') +
     '<div style="margin-top:10px;font-size:.88em">클리어 던전 <b>' + cleared + ' / ' + DATA.dungeons.length + '</b></div>' +
     '<div style="margin-top:8px"><span class="savebadge ' + (S.dirty ? 'dirty">● 저장 안 된 진행 있음' : 'clean">✔ 저장됨' + (S.lastSavedAt ? ' ' + esc(S.lastSavedAt) : '')) + '</span></div>' +
     '</div>';
@@ -658,7 +662,7 @@ function showHelp() {
 function makePlayer() {
   const st = calcStats(), c = classOf();
   return {
-    x: 110, y: 410, z: 0, vz: 0, vx: 0, facing: 1, size: 64, emoji: c.emoji, emojiFacing: c.emojiFacing || 'L',
+    classId: P.classId, x: 110, y: 410, z: 0, vz: 0, vx: 0, facing: 1, size: 64, emoji: c.emoji, emojiFacing: c.emojiFacing || 'L',
     st: st, hp: st.maxHp, mp: st.maxMp, action: null, atkStep: 0, comboWin: 0, invul: 0, cds: {}, buffAtk: 0, buffT: 0,
     dash: false, lastTap: {}, backCd: 0, potCd: 0, flash: 0, hurt: 0, swing: null, nameTag: S.name, msgCd: 0,
   };
@@ -762,7 +766,7 @@ function startAttack() {
   if (p.z > 0) { p.action = { type: 'jatk', t: 0, dur: 0.34, hitAt: 0.08, move: true }; return; }
   const step = p.comboWin > 0 ? (p.atkStep + 1) % 3 : 0;
   p.atkStep = step;
-  p.action = { type: 'atk', t: 0, step: step, dur: [0.25, 0.25, 0.36][step], hitAt: [0.07, 0.07, 0.13][step], mult: [1.0, 1.1, 1.5][step], kb: [70, 70, 260][step] };
+  p.action = { type: 'atk', t: 0, step: step, dur: (P.classId === 'fighter' ? [0.22, 0.22, 0.32] : P.classId === 'gunner' ? [0.32, 0.32, 0.42] : [0.25, 0.25, 0.36])[step], hitAt: [0.07, 0.07, 0.13][step], mult: [1.0, 1.1, 1.5][step], kb: [70, 70, 260][step] };
 }
 
 function runAction(p, dt) {
@@ -771,15 +775,21 @@ function runAction(p, dt) {
   if (a.type === 'atk') {
     if (!a.hit && a.t >= a.hitAt) {
       a.hit = true;
-      hitMobs(p, { rangeX: 95, rangeY: 38, mult: a.mult, kb: a.kb, hitstun: a.step === 2 ? 0.5 : 0.35, heavy: a.step === 2 });
-      fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z, facing: p.facing, r: 58, life: 0.18, color: a.step === 2 ? '#ffe08a' : '#ffffff' });
+      if (P.classId === 'gunner') fireBasicShot(p, a.mult);
+      else {
+        hitMobs(p, { rangeX: P.classId === 'fighter' ? 75 : 95, rangeY: 38, mult: a.mult, kb: a.kb, hitstun: a.step === 2 ? 0.5 : 0.35, heavy: a.step === 2 });
+        fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z, facing: p.facing, r: 58, life: 0.18, color: a.step === 2 ? '#ffe08a' : '#ffffff' });
+      }
     }
     if (a.hit && pressed('KeyX')) a.queued = true;
   } else if (a.type === 'jatk') {
     if (!a.hit && a.t >= a.hitAt) {
       a.hit = true;
-      hitMobs(p, { rangeX: 90, rangeY: 42, mult: 1.2, kb: 90, hitstun: 0.4, zMax: p.z + 90 });
-      fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z, facing: p.facing, r: 52, life: 0.18 });
+      if (P.classId === 'gunner') fireBasicShot(p, 1.2);
+      else {
+        hitMobs(p, { rangeX: P.classId === 'fighter' ? 70 : 90, rangeY: 42, mult: 1.2, kb: 90, hitstun: 0.4, zMax: p.z + 90 });
+        fx({ type: 'slash', x: p.x + p.facing * 20, y: p.y, z: p.z, facing: p.facing, r: 52, life: 0.18 });
+      }
     }
   } else if (a.type === 'skill') {
     runSkill(p, a, dt);
@@ -788,6 +798,13 @@ function runAction(p, dt) {
     p.action = null;
     if (a.type === 'atk') { p.comboWin = 0.35; if (a.queued) startAttack(); }
   }
+}
+
+/** 거너 기본 사격은 MP를 소모하지 않습니다. */
+function fireBasicShot(p, mult) {
+  RUN.projs.push({ owner: 'p', x: p.x + p.facing * 35, y: p.y, z: p.z + 36,
+    vx: p.facing * 900, range: 460, travelled: 0, emoji: '🔸', size: 22,
+    mult: mult, rangeY: 30, once: new Set(), singleTarget: true });
 }
 
 function usePotion(kind) {
@@ -1097,7 +1114,7 @@ function updateProjs(dt) {
     pr.x += step; pr.travelled += Math.abs(step);
     if (pr.owner === 'p') {
       R.mobs.forEach(function (m) {
-        if (m.dead || pr.once.has(m)) return;
+        if (m.dead || pr.once.has(m) || (pr.singleTarget && pr.once.size)) return;
         if (Math.abs(m.x - pr.x) <= m.size * 0.5 + 24 && Math.abs(m.y - pr.y) <= pr.rangeY && m.z < 160) {
           pr.once.add(m); damageMob(m, pr.mult, { kb: 90, hitstun: 0.4, dirFrom: pr.x - pr.vx });
         }
@@ -1105,7 +1122,7 @@ function updateProjs(dt) {
     } else if (Math.abs(p.x - pr.x) < 28 && Math.abs(p.y - pr.y) < 26 && p.z < 60 && p.invul <= 0) {
       hurtPlayer(pr.src, pr.mult); return false;
     }
-    return pr.travelled < pr.range && pr.x > 0 && pr.x < ROOM_W;
+    return !(pr.singleTarget && pr.once.size) && pr.travelled < pr.range && pr.x > 0 && pr.x < ROOM_W;
   });
 }
 
@@ -1384,7 +1401,7 @@ function drawHud() {
   // 스킬 슬롯
   const s = 42, sk = classSkills();
   let x = 350;
-  Renderer.skillSlot(ctx, x, H - 54, s, '🗡️', 'X', 0, false, false); x += s + 6;
+  Renderer.skillSlot(ctx, x, H - 54, s, P.classId === 'fighter' ? '🥊' : P.classId === 'gunner' ? '🔫' : '🗡️', 'X', 0, false, false); x += s + 6;
   sk.forEach(function (k) {
     const locked = P.level < num(k.reqLevel), cd = Math.max(0, p.cds[k.id] || 0);
     Renderer.skillSlot(ctx, x, H - 54, s, k.emoji, String(k.key).toUpperCase(), cd / num(k.cooldown, 1), p.mp < num(k.mp), locked);

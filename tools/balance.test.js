@@ -1,4 +1,4 @@
-const { chromium } = require(require('child_process').execSync('npm root -g').toString().trim() + '/playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const path = require('path');
 const CASES = [
   { d: 1, lv: 1, eq: ['w_rusty', 'a_cloth', ''] },
@@ -29,7 +29,10 @@ const CASES = [
       setHold('ArrowRight', tx > p.x + 15); setHold('ArrowLeft', tx < p.x - 15); setHold('ArrowDown', ty > p.y + 8); setHold('ArrowUp', ty < p.y - 8);
     }, 60);
   });
-  for (const c of CASES) {
+  const classes = (process.env.BALANCE_CLASSES || 'swordsman').split(',');
+  const dungeonIds = (process.env.BALANCE_DUNGEONS || '1,2,3,4,5').split(',').map(Number);
+  for (const cid of classes) for (const c of CASES.filter(c => dungeonIds.includes(c.d))) {
+    await page.evaluate(cid => newCharacter(cid), cid);
     await page.evaluate(c => { P.level = c.lv; P.exp = 0; P.equip = { weapon: c.eq[0], armor: c.eq[1], accessory: c.eq[2] }; P.inventory = []; invAdd('p_hp', 5); invAdd('p_mp', 5); startDungeon(DATA.dungeons[c.d - 1]); window.__deaths = 0; }, c);
     let deaths = 0, t0 = Date.now();
     while (Date.now() - t0 < 180000) {
@@ -39,7 +42,7 @@ const CASES = [
       await page.waitForTimeout(400);
     }
     const r = await page.evaluate(() => ({ screen, t: Math.round(RUN.time), hits: RUN.hits, grade: RUN.result && RUN.result.grade, lvAfter: P.level, pots: invCount('p_hp') }));
-    console.log('D' + c.d, 'Lv' + c.lv, JSON.stringify(r), 'deaths', deaths);
+    console.log(cid, 'D' + c.d, 'Lv' + c.lv, JSON.stringify(r), 'deaths', deaths);
   }
   console.log('errors', errs);
   await browser.close();
