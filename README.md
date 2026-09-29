@@ -30,10 +30,28 @@ dungeon-rpg-gas/
 │  ├─ GasMock.js        # Apps Script 서비스 모의 객체 (미리보기·테스트용)
 │  ├─ server.test.js    # 서버 로직 테스트 (Node)
 │  ├─ e2e.test.js       # 브라우저 자동 플레이 테스트 (Playwright)
-│  └─ balance.test.js   # 던전별 난이도 시뮬레이션 (Playwright)
+│  ├─ balance.test.js   # 던전별 난이도 시뮬레이션 (Playwright)
+│  └─ gen-schema.js     # docs/DATA_SCHEMA.md 생성
+├─ docs/                # 구조·데이터·인수인계 문서
+├─ AGENTS.md            # AI 에이전트 공통 지침 (CLAUDE.md·GEMINI.md가 여기로 안내)
 ├─ CHANGELOG.md         # 버전별 변경 이력 (git 태그 ↔ 배포 버전)
 └─ package.json         # npm 명령 모음
 ```
+
+## AI 에이전트로 유지보수할 때
+
+`AGENTS.md`(공통 지침)와 `docs/HANDOFF.md`(현재 상태·작업 기록)를 먼저 읽게 하세요. Claude Code는 `CLAUDE.md`, Gemini는 `GEMINI.md`, Copilot은 `.github/copilot-instructions.md`를 자동으로 읽고 모두 `AGENTS.md`로 안내됩니다. 새 세션에 줄 첫 메시지 예시는 `docs/HANDOFF.md` 맨 위에 있습니다.
+
+| 문서 | 내용 |
+|---|---|
+| `AGENTS.md` | 규칙, 작업 흐름, 완료 조건, 작업→수정 위치 표 |
+| `docs/ARCHITECTURE.md` | 서버·클라이언트 구조, 전투 엔진, 공식 |
+| `docs/DATA_SCHEMA.md` | 시트 컬럼 설명 (`npm run schema`로 Data.gs에서 재생성) |
+| `docs/HANDOFF.md` | 현재 상태, 결정 사항, 미해결 이슈, 작업 기록 |
+| `docs/DIAGRAMS.md` | 함수·클래스 다이어그램, 상태 전이, 호출 흐름 |
+| `docs/API.md` | 서버 API 명세, 시퀀스 다이어그램 |
+| `docs/ERD.md` | 스프레드시트 ER 다이어그램, 무결성 규칙 |
+| `docs/USE_CASES.md` | 유스케이스 다이어그램·상세 흐름 |
 
 ## 개발 흐름
 

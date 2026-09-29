@@ -7,6 +7,7 @@
     "test": "node tools/server.test.js",
     "test:e2e": "node tools/build.js && node tools/e2e.test.js",
     "build": "node tools/build.js",
+    "schema": "node tools/gen-schema.js",
     "push": "clasp push -f",
     "deploy": "clasp create-deployment -i YOUR_DEPLOYMENT_ID -d",
     "deployments": "clasp list-deployments",
