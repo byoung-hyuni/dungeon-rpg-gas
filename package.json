@@ -9,9 +9,10 @@
     "build": "node tools/build.js",
     "schema": "node tools/gen-schema.js",
     "push": "clasp push -f",
-    "deploy": "clasp create-deployment -i YOUR_DEPLOYMENT_ID -d",
+    "deploy": "node tools/deploy.js",
     "deployments": "clasp list-deployments",
     "open": "clasp open-script",
-    "test:classes": "node tools/build.js && node tools/classes-event.test.js"
+    "test:classes": "node tools/build.js && node tools/classes-event.test.js",
+    "check:public": "node tools/check-public.js"
   }
 }

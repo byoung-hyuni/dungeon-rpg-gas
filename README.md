@@ -4,17 +4,18 @@
 
 | 항목 | 값 |
 |---|---|
-| 게임 주소 | https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec |
-| 스프레드시트 | https://drive.google.com/open?id=YOUR_SPREADSHEET_ID |
-| Apps Script 프로젝트 | https://script.google.com/d/YOUR_SCRIPT_ID/edit |
-| 배포 ID (고정) | `YOUR_DEPLOYMENT_ID` |
+| 게임 주소 | 운영 URL은 로컬 설정에서 관리합니다. |
+| 스프레드시트 | `.clasp.json`의 `parentId`를 로컬에서 관리합니다. |
+| Apps Script 프로젝트 | `.clasp.json`의 `scriptId`를 로컬에서 관리합니다. |
+| 배포 ID (고정) | `.deployment.local.json`의 `deploymentId`를 유지합니다. Git에 올리지 않습니다. |
 | 기준 버전 | git 태그 `v1.0.0` = Apps Script 배포 버전 `@1` |
 
 ## 폴더 구성
 
 ```
 dungeon-rpg-gas/
-├─ .clasp.json          # clasp 설정 (scriptId, rootDir=src)
+├─ .clasp.example.json  # 개인 설정을 만들 때 복사하는 예시입니다.
+├─ .clasp.json          # 로컬 전용 clasp 설정입니다. Git에서 제외합니다.
 ├─ src/                 # Apps Script에 올라가는 파일 (clasp push 대상)
 │  ├─ appsscript.json   # 매니페스트 (웹 앱: 실행=배포자, 접근=모든 사용자)
 │  ├─ Code.gs           # 서버: 데이터 로드, 로그인, 저장, 랭킹
@@ -52,6 +53,14 @@ dungeon-rpg-gas/
 | `docs/API.md` | 서버 API 명세, 시퀀스 다이어그램 |
 | `docs/ERD.md` | 스프레드시트 ER 다이어그램, 무결성 규칙 |
 | `docs/USE_CASES.md` | 유스케이스 다이어그램·상세 흐름 |
+
+## 로컬 운영 설정
+
+공개 저장소에는 운영 URL, 프로젝트·스프레드시트·배포 ID, 인증 정보를 포함하지 않습니다.
+
+처음 복제했다면 `.clasp.example.json`을 `.clasp.json`으로, `.deployment.example.json`을 `.deployment.local.json`으로 복사하고 본인 프로젝트의 값을 입력하세요. 기존 운영 환경에서는 원래 로컬 설정을 유지하세요. `npm run deploy`는 `DEPLOYMENT_ID` 환경 변수가 있으면 그 값을, 없으면 `.deployment.local.json` 값을 사용합니다. 설정이 없거나 예시 값이면 배포를 중단합니다.
+
+커밋 전 `npm run check:public`을 실행하면 공개 이력에 운영 식별자나 인증 정보가 섞였는지 확인할 수 있습니다.
 
 ## 개발 흐름
 
@@ -135,4 +144,4 @@ npm run deploy -- "v1.1.0 설명"   # 같은 게임 주소로 새 버전 배포
 - 전투는 모두 브라우저에서 계산하고, 서버는 시작·저장·랭킹 때만 호출합니다.
 - 웹 앱은 iframe 안에서 열리므로 키가 안 먹으면 화면을 한 번 클릭하세요.
 - 직업명·던전명·몬스터명은 원작 IP를 쓰지 않은 자체 이름입니다.
-- `.clasp.json`의 scriptId는 비밀값이 아니지만, 저장소를 공개(public)로 올리면 누구나 프로젝트 ID를 알게 됩니다. 로그인 정보(`~/.clasprc.json`)는 저장소에 절대 넣지 마세요.
+- 운영 식별자는 `.clasp.json`과 `.deployment.local.json`에서 관리합니다. 두 파일과 로그인 정보(`~/.clasprc.json`)는 Git에 올리지 않습니다.

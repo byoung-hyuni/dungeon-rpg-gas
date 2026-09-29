@@ -23,7 +23,7 @@
 | 마지막 갱신 | 2026-09-29 |
 | 배포 버전 | `v1.0.0` = Apps Script `@1` (게임 주소는 AGENTS.md 1장) |
 | main 브랜치 | v1.0.1 보안 수정과 v1.1.0 예정인 신규 직업·이벤트 구현을 포함합니다. Apps Script에는 아직 배포하지 않았습니다. |
-| 원격 저장소 | [byoung-hyuni/dungeon-rpg-gas](https://github.com/byoung-hyuni/dungeon-rpg-gas) (비공개) |
+| 원격 저장소 | [byoung-hyuni/dungeon-rpg-gas](https://github.com/byoung-hyuni/dungeon-rpg-gas) (공개용 정보 정리 후 공개) |
 | 테스트 | `npm test` 통과 |
 
 ### 결정 사항 (사용자 확인 완료 — 바꾸려면 먼저 사용자에게 물을 것)
@@ -39,7 +39,7 @@
 ### 미해결 · 확인 필요
 - [ ] 신규 직업·이벤트 운영 반영과 실제 발송: `NEW_CLASSES_EVENT.md`의 순서에 따라 배포 후 시트 메뉴 두 개를 실행하세요. 아직 실사용자에게 발송하지 않았습니다.
 - [ ] **v1.0.1 보안 수정 배포** — 사용자 승인 후 `npm run push` → `npm run deploy -- "v1.0.1 관리자 함수 웹 앱 호출 차단"` → CHANGELOG에 @번호 기록, `package.json` version 1.0.1, `git tag -a v1.0.1`
-- [ ] 커밋 작성자가 Mac 전역 설정(AnByoungHyun / 개인 Gmail)으로 기록됨 — 회사 메일로 바꿀지 사용자 결정 대기
+- [x] 공개 이력의 작성자 이메일을 GitHub noreply 주소로 통일했습니다. 저장소 로컬 Git 설정에도 적용합니다.
 - [ ] 첫 배포 시도 때 남은 것 정리: 로컬 `_to_delete/` 폴더, Drive의 빈 스프레드시트 「던전마스터 RPG DB」, Apps Script 「제목 없는 프로젝트」(standalone, 미사용)
 - [x] GitHub 원격 저장소 연결: `origin`은 `byoung-hyuni/dungeon-rpg-gas`입니다.
 
@@ -61,6 +61,13 @@
 - 결정: 사용자에게 확인받은 내용과 이유
 - 남은 일: 끝내지 못한 일, 사용자가 시트에서 해야 할 일
 -->
+
+### 2026-09-29 공개 저장소 준비 (작업자: Codex)
+- 요청: 저장소를 공개하고 보안에 영향을 줄 수 있는 정보는 노출하지 않습니다.
+- 변경: 운영 URL과 프로젝트·스프레드시트·배포 ID를 문서에서 제거합니다. `.clasp.json`과 `.deployment.local.json`은 로컬에서 유지하며 Git에서 제외합니다. 공개용 예시 파일과 로컬 설정을 읽는 배포 도구를 추가합니다.
+- 이력: 원본을 비공개 백업으로 보존하고, 공개할 모든 커밋과 태그에서 운영 식별자·개인 이메일을 제거합니다. 이력 정리로 커밋 해시가 바뀝니다. 공개 저장소에는 정리한 이력만 업로드합니다.
+- 재발 방지: `npm run check:public`으로 모든 로컬 Git 참조의 파일·커밋·태그와 현재 추적 파일을 검사합니다.
+- 배포: Apps Script 코드와 실제 사용자 데이터는 변경하지 않습니다. 운영 배포와 이벤트 발송은 여전히 미실행 상태입니다.
 
 ### 2026-09-29 GitHub 저장소 생성 (작업자: Codex)
 - 요청: 프로젝트를 GitHub에 업로드합니다.

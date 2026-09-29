@@ -10,3 +10,13 @@ node_modules/
 
 # 첫 배포 시도 때 남은 폴더 (삭제 예정)
 _to_delete/
+
+# 공개 저장소에는 로컬 운영 설정과 인증 정보를 올리지 않습니다.
+.clasp.json
+.deployment.local.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*.json

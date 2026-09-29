@@ -23,10 +23,10 @@ Google Apps Script 웹 앱으로 동작하는 던전앤파이터 스타일 횡�
 
 | 항목 | 값 |
 |---|---|
-| 게임 주소 | https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec |
-| 배포 ID (고정, 절대 바꾸지 말 것) | `YOUR_DEPLOYMENT_ID` |
-| Script ID | `YOUR_SCRIPT_ID` (스프레드시트에 바인딩됨) |
-| 스프레드시트 ID | `YOUR_SPREADSHEET_ID` |
+| 게임 주소 | 운영 URL은 로컬 설정에서 관리합니다. |
+| 배포 ID (고정) | `.deployment.local.json`의 `deploymentId`를 유지합니다. Git에 올리지 않습니다. |
+| Apps Script 프로젝트 | `.clasp.json`의 `scriptId`를 로컬에서 관리합니다. |
+| 스프레드시트 | `.clasp.json`의 `parentId`를 로컬에서 관리합니다. |
 | 소유자 | 운영 담당자 (로컬에서 별도 관리합니다) |
 | 웹 앱 설정 | 실행 = 배포자(`USER_DEPLOYING`), 접근 = 모든 사용자(`ANYONE_ANONYMOUS`) — `src/appsscript.json` |
 | 사용 언어 | UI 문구·주석·문서 모두 **한국어** |
